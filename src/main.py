@@ -6,12 +6,15 @@ from fastapi.staticfiles import StaticFiles
 from src import ml
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.database import get_connection, init_db
+from src.routing import find_safe_route
 from src.schemas import (
     BulkReportRequest,
     IncidentOut,
     IncidentReport,
     PredictionRequest,
     PredictionResponse,
+    SafeRouteRequest,
+    SafeRouteResponse,
 )
 
 app = FastAPI(title="Emergency Intelligence System", version="0.1.0")
@@ -71,6 +74,21 @@ def predict(request: PredictionRequest):
 @app.get("/model/known-values")
 def model_known_values():
     return {"areas": ml.known_areas(), "types": ml.known_types()}
+
+
+# -------------------------------------------------------------------
+# Safe routing
+# -------------------------------------------------------------------
+
+@app.post("/route/safe", response_model=SafeRouteResponse)
+def safe_route(request: SafeRouteRequest):
+    result = find_safe_route(request.latitude, request.longitude, request.risk_aversion)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No safe zone found nearby - location may be outside the covered area.",
+        )
+    return result
 
 
 # -------------------------------------------------------------------

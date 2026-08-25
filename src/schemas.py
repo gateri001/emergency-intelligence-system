@@ -28,6 +28,25 @@ class PredictionResponse(BaseModel):
     message: str
 
 
+class SafeRouteRequest(BaseModel):
+    latitude: float
+    longitude: float
+    risk_aversion: float = Field(4.0, ge=0, le=20, description="Higher = detour more readily to avoid risk")
+
+
+class RoutePoint(BaseModel):
+    lat: float
+    lon: float
+    risk: float
+
+
+class SafeRouteResponse(BaseModel):
+    start: RoutePoint
+    safe_zone: RoutePoint
+    waypoints: list[RoutePoint]
+    distance_km: float
+
+
 class IncidentOut(BaseModel):
     id: int
     source: str

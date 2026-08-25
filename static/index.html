@@ -57,6 +57,10 @@
     <button onclick="predictRisk()">Check Risk</button>
     <div class="result" id="predictionResult"></div>
 
+    <h3>Find a Safe Route</h3>
+    <button onclick="findSafeRoute()">Use my location</button>
+    <div class="result" id="routeResult"></div>
+
     <h3>Recent Incidents</h3>
     <div class="result" id="recentList">Loading…</div>
   </div>
@@ -124,6 +128,57 @@ async function loadRecent() {
       markers.push(m);
     }
   });
+}
+
+let routeLayer = null;
+let routeMarkers = [];
+
+function findSafeRoute() {
+  const resultEl = document.getElementById('routeResult');
+  if (!navigator.geolocation) {
+    resultEl.innerText = 'Geolocation not supported by this browser.';
+    return;
+  }
+  resultEl.innerText = 'Locating…';
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const { latitude, longitude } = pos.coords;
+    await requestRoute(latitude, longitude);
+  }, () => {
+    resultEl.innerText = 'Could not get your location — click the map instead.';
+  });
+}
+
+// Fallback / manual testing: click anywhere on the map to route from there.
+map.on('click', (e) => requestRoute(e.latlng.lat, e.latlng.lng));
+
+async function requestRoute(lat, lon) {
+  const resultEl = document.getElementById('routeResult');
+  resultEl.innerText = 'Finding safest route…';
+  const res = await fetch(`${API}/route/safe`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ latitude: lat, longitude: lon })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    resultEl.innerText = data.detail || 'No safe route found from this location.';
+    return;
+  }
+
+  if (routeLayer) map.removeLayer(routeLayer);
+  routeMarkers.forEach(m => map.removeLayer(m));
+  routeMarkers = [];
+
+  const latlngs = data.waypoints.map(w => [w.lat, w.lon]);
+  routeLayer = L.polyline(latlngs, { color: '#34d399', weight: 5 }).addTo(map);
+
+  const startMarker = L.circleMarker([data.start.lat, data.start.lon], { radius: 8, color: '#f87171' })
+    .addTo(map).bindPopup(`You are here (risk ${data.start.risk})`).openPopup();
+  const safeMarker = L.circleMarker([data.safe_zone.lat, data.safe_zone.lon], { radius: 8, color: '#34d399' })
+    .addTo(map).bindPopup(`Safe zone (risk ${data.safe_zone.risk})`);
+  routeMarkers.push(startMarker, safeMarker);
+
+  map.fitBounds(routeLayer.getBounds(), { padding: [40, 40] });
+  resultEl.innerText = `Safe zone ${data.distance_km} km away — risk dropped from ${data.start.risk} to ${data.safe_zone.risk}.`;
 }
 
 loadRecent();
