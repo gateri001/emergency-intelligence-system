@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Emergency Intelligence System</title>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; background: #0b0f19; color: #fff; }
+  header { background: #121a2f; padding: 15px; font-size: 20px; text-align: center; }
+  .status { text-align: center; padding: 6px; background: #065f46; font-size: 13px; }
+  .container { display: flex; }
+  #map { height: 620px; width: 68%; }
+  .sidebar { width: 32%; padding: 16px; background: #111827; box-sizing: border-box; }
+  h3 { margin-top: 0; }
+  input, select, button { width: 100%; margin-top: 8px; padding: 8px; box-sizing: border-box; }
+  button { background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer; padding: 10px; }
+  button:hover { background: #1d4ed8; }
+  .result { margin-top: 10px; padding: 8px; border-radius: 4px; background: #1f2937; font-size: 14px; min-height: 18px; }
+  .severity-High { color: #f87171; font-weight: bold; }
+  .severity-Medium { color: #fbbf24; font-weight: bold; }
+  .severity-Low { color: #34d399; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<header>Emergency Intelligence System</header>
+<div class="status">Multi-hazard risk intelligence for Kenya — crime, flood, fire, medical</div>
+
+<div class="container">
+  <div id="map"></div>
+
+  <div class="sidebar">
+    <h3>Report an Incident</h3>
+    <select id="type">
+      <option value="robbery">Robbery</option>
+      <option value="burglary">Burglary</option>
+      <option value="assault">Assault</option>
+      <option value="flood">Flood</option>
+      <option value="fire">Fire</option>
+      <option value="medical_emergency">Medical Emergency</option>
+      <option value="accident">Accident</option>
+    </select>
+    <input id="area" placeholder="Area (e.g. Kibera)" />
+    <input id="description" placeholder="Brief description (optional)" />
+    <button onclick="reportIncident()">Submit Report</button>
+    <div class="result" id="reportResult"></div>
+
+    <h3>Risk Prediction</h3>
+    <input id="predictArea" placeholder="Area" />
+    <select id="predictType">
+      <option value="robbery">Robbery</option>
+      <option value="burglary">Burglary</option>
+      <option value="theft">Theft</option>
+      <option value="flood">Flood</option>
+      <option value="fire">Fire</option>
+    </select>
+    <button onclick="predictRisk()">Check Risk</button>
+    <div class="result" id="predictionResult"></div>
+
+    <h3>Recent Incidents</h3>
+    <div class="result" id="recentList">Loading…</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+const API = window.location.origin;
+const map = L.map('map').setView([-1.286389, 36.817223], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+function nowTimestamp() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function reportIncident() {
+  const body = {
+    type: document.getElementById('type').value,
+    area: document.getElementById('area').value,
+    description: document.getElementById('description').value,
+    timestamp: nowTimestamp()
+  };
+  const res = await fetch(`${API}/report/citizen`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  document.getElementById('reportResult').innerText =
+    res.ok ? `Reported (incident #${data.incident_id})` : (data.detail || 'Error submitting report');
+  loadRecent();
+}
+
+async function predictRisk() {
+  const body = {
+    area: document.getElementById('predictArea').value,
+    type: document.getElementById('predictType').value,
+    timestamp: nowTimestamp()
+  };
+  const res = await fetch(`${API}/predict`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const el = document.getElementById('predictionResult');
+  if (res.ok) {
+    el.innerHTML = `Predicted risk: <span class="severity-${data.predicted_severity}">${data.predicted_severity}</span>`;
+  } else {
+    el.innerText = data.detail || 'Error getting prediction';
+  }
+}
+
+let markers = [];
+async function loadRecent() {
+  const res = await fetch(`${API}/incidents?limit=50`);
+  const data = await res.json();
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  const list = document.getElementById('recentList');
+  list.innerHTML = data.length ? '' : 'No incidents yet.';
+  data.forEach(inc => {
+    list.innerHTML += `<div>${inc.type} — ${inc.area} — <span class="severity-${inc.predicted_severity}">${inc.predicted_severity}</span></div>`;
+    if (inc.latitude && inc.longitude) {
+      const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color: '#f87171' })
+        .addTo(map).bindPopup(`${inc.type} in ${inc.area} (${inc.predicted_severity})`);
+      markers.push(m);
+    }
+  });
+}
+
+loadRecent();
+setInterval(loadRecent, 15000);
+</script>
+</body>
+</html>
