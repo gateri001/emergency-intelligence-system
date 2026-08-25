@@ -220,6 +220,20 @@ def list_broadcasts(officer: str = Depends(get_current_officer)):
 
 
 # -------------------------------------------------------------------
+# Verified external events (GDACS, etc.) - corroboration, not training data
+# -------------------------------------------------------------------
+
+@app.get("/events/external")
+def list_external_events():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM external_events ORDER BY from_date DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# -------------------------------------------------------------------
 # Static dashboard
 # -------------------------------------------------------------------
 

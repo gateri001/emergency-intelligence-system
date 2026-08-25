@@ -63,6 +63,9 @@
 
     <h3>Recent Incidents</h3>
     <div class="result" id="recentList">Loading…</div>
+
+    <h3>Verified Events (GDACS)</h3>
+    <div class="result" id="externalEvents">Loading…</div>
   </div>
 </div>
 
@@ -181,7 +184,18 @@ async function requestRoute(lat, lon) {
   resultEl.innerText = `Safe zone ${data.distance_km} km away — risk dropped from ${data.start.risk} to ${data.safe_zone.risk}.`;
 }
 
+async function loadExternalEvents() {
+  const res = await fetch(`${API}/events/external`);
+  const data = await res.json();
+  const el = document.getElementById('externalEvents');
+  if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_gdacs.py'; return; }
+  el.innerHTML = data.map(e =>
+    `<div>${e.event_type} — ${e.name} <br><small>${e.from_date?.slice(0,10)} → ${e.to_date?.slice(0,10)} (${e.alert_level})</small></div>`
+  ).join('<hr style="border-color:#374151">');
+}
+
 loadRecent();
+loadExternalEvents();
 setInterval(loadRecent, 15000);
 </script>
 </body>
