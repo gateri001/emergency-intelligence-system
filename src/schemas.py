@@ -47,6 +47,26 @@ class SafeRouteResponse(BaseModel):
     distance_km: float
 
 
+class SubscriberIn(BaseModel):
+    phone_number: str = Field(..., examples=["+254712345678"])
+    area: str = ""
+    latitude: float
+    longitude: float
+
+
+class BroadcastRequest(BaseModel):
+    incident_id: int
+    message: str = Field(..., max_length=300)
+    radius_km: float = Field(5.0, gt=0, le=50)
+
+
+class BroadcastResponse(BaseModel):
+    broadcast_id: int
+    recipients_reached: int
+    radius_km: float
+    message: str
+
+
 class IncidentOut(BaseModel):
     id: int
     source: str

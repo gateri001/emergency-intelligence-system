@@ -5,9 +5,13 @@ from fastapi.staticfiles import StaticFiles
 
 from src import ml
 from src.auth import authenticate_officer, create_access_token, get_current_officer
+from src.broadcast import get_provider
 from src.database import get_connection, init_db
+from src.geo import haversine_km
 from src.routing import find_safe_route
 from src.schemas import (
+    BroadcastRequest,
+    BroadcastResponse,
     BulkReportRequest,
     IncidentOut,
     IncidentReport,
@@ -15,6 +19,7 @@ from src.schemas import (
     PredictionResponse,
     SafeRouteRequest,
     SafeRouteResponse,
+    SubscriberIn,
 )
 
 app = FastAPI(title="Emergency Intelligence System", version="0.1.0")
@@ -137,6 +142,81 @@ def list_incidents(limit: int = 100):
     ).fetchall()
     conn.close()
     return [IncidentOut(**dict(row)) for row in rows]
+
+
+# -------------------------------------------------------------------
+# Surjection: geo-targeted broadcast alerts
+# -------------------------------------------------------------------
+
+@app.post("/subscribers")
+def add_subscriber(sub: SubscriberIn):
+    """Anyone can opt in to receive area alerts - no auth required to subscribe."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO subscribers (phone_number, area, latitude, longitude) VALUES (?, ?, ?, ?)",
+        (sub.phone_number, sub.area, sub.latitude, sub.longitude),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "subscribed"}
+
+
+@app.post("/alert/broadcast", response_model=BroadcastResponse)
+def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_current_officer)):
+    """
+    Officer-only, deliberately: a mass alert is a consequential action and
+    needs a human decision behind it, not an automatic trigger off a
+    severity score. Geo-targets every subscriber within radius_km of the
+    incident and sends through whatever BroadcastProvider is configured.
+    """
+    conn = get_connection()
+    incident = conn.execute(
+        "SELECT * FROM incidents WHERE id = ?", (request.incident_id,)
+    ).fetchone()
+    if incident is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if incident["latitude"] is None or incident["longitude"] is None:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="Incident has no location on file - cannot geo-target a broadcast",
+        )
+
+    subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
+    targets = [
+        s for s in subscribers
+        if haversine_km(incident["latitude"], incident["longitude"], s["latitude"], s["longitude"])
+        <= request.radius_km
+    ]
+
+    provider = get_provider()
+    for s in targets:
+        provider.send(s["phone_number"], request.message)
+
+    cursor = conn.execute(
+        "INSERT INTO broadcasts (incident_id, message, radius_km, recipient_count, triggered_by) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (request.incident_id, request.message, request.radius_km, len(targets), officer),
+    )
+    conn.commit()
+    broadcast_id = cursor.lastrowid
+    conn.close()
+
+    return BroadcastResponse(
+        broadcast_id=broadcast_id,
+        recipients_reached=len(targets),
+        radius_km=request.radius_km,
+        message=request.message,
+    )
+
+
+@app.get("/alert/broadcasts")
+def list_broadcasts(officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM broadcasts ORDER BY id DESC LIMIT 50").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # -------------------------------------------------------------------

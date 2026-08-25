@@ -33,5 +33,26 @@ def init_db():
             hashed_password TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS subscribers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number TEXT NOT NULL,
+            area TEXT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_id INTEGER NOT NULL REFERENCES incidents(id),
+            message TEXT NOT NULL,
+            radius_km REAL NOT NULL,
+            recipient_count INTEGER NOT NULL,
+            triggered_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     conn.commit()
     conn.close()

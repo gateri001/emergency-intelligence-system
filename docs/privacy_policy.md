@@ -14,10 +14,15 @@ trustworthy with people's information from day one, not as an afterthought
   never stored in plain text (bcrypt hashing via `passlib`).
 
 No names, phone numbers, or national ID numbers are collected as part of an
-incident report today. If future versions add contact fields (e.g. for
-follow-up on a citizen report), those fields will be clearly optional,
-separately protected, and covered by an update to this document before they
-ship — not bundled in silently.
+**incident report** itself.
+
+- **Alert subscribers**: a phone number and an approximate location, collected
+  only when someone explicitly opts in via `/subscribers` to receive area
+  alerts. This is a separate, deliberate, consent-based signup — not
+  something bundled into filing an incident report. It exists for exactly
+  one purpose: geo-targeted broadcast alerts (see `architecture.md`,
+  Surjection). Phone numbers are not used for anything else and are not
+  linked to any incident report someone may separately file.
 
 ## Storage
 
