@@ -47,6 +47,15 @@ Bulk imports (open data feeds)  ─┘                                │
    graph, out of scope for now) — but it's real graph search over an actual
    risk model, not a nearest-neighbor lookup or a static heatmap.
 
+   The risk surface covers all of Kenya (widened 2026-08-26 from an
+   earlier Nairobi-only box), at ~10km/cell resolution nationally — a
+   deliberate tradeoff (national coverage over fine detail) that's
+   flagged, not hidden; see "Explicitly not yet built" below. Routing
+   builds its own separate, finer local grid (~800m/cell, ~33km window)
+   around each query point rather than searching the coarse national one,
+   since a useful route needs street-block resolution and a "nearest safe
+   zone" recommendation shouldn't be able to reach hundreds of km away.
+
 5. **Broadcast alerts** (`src/broadcast.py`) — geo-targeted mass alerting,
    independent of anyone choosing to reshare a post (the actual problem
    with how missing-person alerts spread today). Anyone can opt in via
@@ -76,6 +85,15 @@ Bulk imports (open data feeds)  ─┘                                │
      separate from the incidents table, since GDACS events are coarse
      (weeks-long, one imprecise point) and would distort the risk grid's
      spatial kernel if mixed with point-level reports.
+   - **NASA FIRMS** (via HDX): near-real-time fire detections, no API key
+     needed. Precise point-level data with a real timestamp, so - unlike
+     GDACS/UNOSAT - it's ingested directly into the `incidents` table, not
+     kept separate. Important caveat: VIIRS detects all thermal anomalies,
+     including routine agricultural burning (very common in East Africa) -
+     ~1,100 raw detections/day in Kenya's bounding box, filtered to the
+     more significant ~20% (FRP >= 10 MW, confidence != low) rather than
+     ingested wholesale. See `scripts/ingest_firms.py` for the exact
+     threshold and why.
    - **UNOSAT** (via the Humanitarian Data Exchange): satellite-derived,
      ground-truthed flood mapping for the April 2024 Kenya floods -
      precise flood-extent polygons and 12,211 individually-identified
@@ -102,6 +120,13 @@ Bulk imports (open data feeds)  ─┘                                │
   means "lowest-risk nearby cell," not a verified point of safety.
 - Cell Broadcast (SMS-CB) for true no-opt-in-required reach — current
   broadcast only reaches people who've subscribed via `/subscribers`.
+- Fine-grained national risk resolution — the general risk surface is
+  ~10km/cell nationally (routing gets ~800m locally, see above). Building
+  the whole country at city-block resolution is a real cost (~25x more
+  cells) deferred deliberately, not solved; if it becomes a bottleneck,
+  the fix is querying/caching a local window per request instead of
+  building the full national grid every time, the same pattern routing
+  already uses.
 - Calibrated/absolute risk scores — the 0-1 risk value is normalized
   relative to the current data's own maximum, not an absolute probability.
   Severity buckets (Low/Medium/High, thresholds in
