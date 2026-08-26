@@ -8,3 +8,4 @@ env/
 .env
 .DS_Store
 *.log
+.cache/

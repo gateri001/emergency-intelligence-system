@@ -1,3 +1,5 @@
+import json
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -228,6 +230,30 @@ def list_external_events():
     conn = get_connection()
     rows = conn.execute(
         "SELECT * FROM external_events ORDER BY from_date DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/events/flood-extents")
+def list_flood_extents():
+    """Real, satellite-mapped flood boundaries (UNOSAT). See scripts/ingest_unosat_flood.py."""
+    conn = get_connection()
+    rows = conn.execute("SELECT event_code, region, geojson, source_date FROM flood_extents").fetchall()
+    conn.close()
+    return [
+        {"event_code": r["event_code"], "region": r["region"],
+         "source_date": r["source_date"], "geometry": json.loads(r["geojson"])}
+        for r in rows
+    ]
+
+
+@app.get("/events/affected-structures-summary")
+def affected_structures_summary():
+    """Real, satellite-verified counts of flood-damaged structures per area (UNOSAT)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT event_code, area, structure_count FROM affected_structures_summary ORDER BY structure_count DESC"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

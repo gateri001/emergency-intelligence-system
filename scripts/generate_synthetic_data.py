@@ -29,6 +29,17 @@ TYPES = {
 
 SEVERITY_WEIGHTS = {"Low": 0.5, "Medium": 0.35, "High": 0.15}
 
+# Real flood-risk weighting per area, from UNOSAT's satellite-verified count of
+# flood-damaged structures in the April 2024 Kenya floods (see
+# scripts/ingest_unosat_flood.py). Areas with no confirmed structures in that
+# event get a small baseline weight, not zero - a single historical event is
+# real evidence, not proof an area can never flood.
+FLOOD_AREA_WEIGHTS = {
+    "Githurai": 2201, "Kayole": 1354, "Donholm": 979, "Kasarani": 645,
+    "Eastleigh": 476, "Ruiru": 470, "Umoja": 303,
+}
+FLOOD_BASELINE_WEIGHT = 20  # for areas with no confirmed damage in that event
+
 
 def jitter(coord, spread=0.01):
     return coord + random.uniform(-spread, spread)
@@ -38,13 +49,20 @@ def weighted_choice(weights: dict):
     return random.choices(list(weights.keys()), weights=list(weights.values()), k=1)[0]
 
 
+def pick_area_for(inc_type: str) -> str:
+    if inc_type != "flood":
+        return random.choice(list(AREAS.keys()))
+    weights = {a: FLOOD_AREA_WEIGHTS.get(a, FLOOD_BASELINE_WEIGHT) for a in AREAS}
+    return weighted_choice(weights)
+
+
 def generate(n=1000):
     rows = []
     start = datetime(2026, 1, 1)
     for i in range(1, n + 1):
-        area = random.choice(list(AREAS.keys()))
-        lat, lon = AREAS[area]
         inc_type = random.choice(list(TYPES.keys()))
+        area = pick_area_for(inc_type)
+        lat, lon = AREAS[area]
         dt = start + timedelta(days=random.randint(0, 240), hours=random.randint(0, 23),
                                 minutes=random.randint(0, 59))
         rows.append({

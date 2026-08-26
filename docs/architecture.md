@@ -56,6 +56,28 @@ Bulk imports (open data feeds)  ─┘                                │
    exist; it deliberately refuses to run rather than pretend to send real
    messages without them.
 
+6. **Real open data** (`scripts/ingest_gdacs.py`, `scripts/ingest_unosat_flood.py`) —
+   two real, verified sources feed into the system alongside the synthetic
+   training data:
+   - **GDACS**: national-scale disaster alerts (flood/drought/wildfire),
+     free, no registration, live-pollable. Stored in `external_events` -
+     separate from the incidents table, since GDACS events are coarse
+     (weeks-long, one imprecise point) and would distort the risk grid's
+     spatial kernel if mixed with point-level reports.
+   - **UNOSAT** (via the Humanitarian Data Exchange): satellite-derived,
+     ground-truthed flood mapping for the April 2024 Kenya floods -
+     precise flood-extent polygons and 12,211 individually-identified
+     affected structures. This is a one-time historical snapshot, not a
+     live feed, used two ways: (1) the flood extent polygon is served via
+     `/events/flood-extents` and drawn on the dashboard as real ground
+     truth, and (2) the affected-structure counts, aggregated by nearest
+     known area, are used to weight `generate_synthetic_data.py`'s flood
+     distribution - synthetic flood incidents are now concentrated in the
+     areas real satellite data confirmed were actually flooded (Githurai,
+     Kayole, Donholm, Kasarani, Eastleigh, Ruiru, Umoja), not spread
+     uniformly across all 16 areas like before. This is real calibration,
+     not just a visual add-on.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not

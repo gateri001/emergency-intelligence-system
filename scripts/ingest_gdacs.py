@@ -51,24 +51,8 @@ def fetch_events(event_type: str, from_date: str, to_date: str) -> list[dict]:
 
 
 def main():
-    init_db()
+    init_db()  # schema for external_events lives centrally in src/database.py
     conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS external_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            country TEXT,
-            name TEXT,
-            latitude REAL,
-            longitude REAL,
-            from_date TEXT,
-            to_date TEXT,
-            alert_level TEXT,
-            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(source, event_type, name, from_date)
-        )
-    """)
 
     from_date = "2015-01-01"
     to_date = date.today().isoformat()

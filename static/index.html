@@ -66,6 +66,9 @@
 
     <h3>Verified Events (GDACS)</h3>
     <div class="result" id="externalEvents">Loading…</div>
+
+    <h3>Verified Flood Damage (UNOSAT)</h3>
+    <div class="result" id="structuresSummary">Loading…</div>
   </div>
 </div>
 
@@ -194,8 +197,28 @@ async function loadExternalEvents() {
   ).join('<hr style="border-color:#374151">');
 }
 
+async function loadFloodExtents() {
+  const res = await fetch(`${API}/events/flood-extents`);
+  const data = await res.json();
+  data.forEach(fe => {
+    L.geoJSON(fe.geometry, {
+      style: { color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.35 }
+    }).addTo(map).bindPopup(`Satellite-mapped flood extent — ${fe.region}, ${fe.source_date} (UNOSAT)`);
+  });
+}
+
+async function loadStructuresSummary() {
+  const res = await fetch(`${API}/events/affected-structures-summary`);
+  const data = await res.json();
+  const el = document.getElementById('structuresSummary');
+  if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_unosat_flood.py'; return; }
+  el.innerHTML = data.map(d => `<div>${d.area}: ${d.structure_count} structures affected</div>`).join('');
+}
+
 loadRecent();
 loadExternalEvents();
+loadFloodExtents();
+loadStructuresSummary();
 setInterval(loadRecent, 15000);
 </script>
 </body>
