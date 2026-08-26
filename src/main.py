@@ -5,11 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
-from src import ml
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.broadcast import get_provider
 from src.database import get_connection, init_db
 from src.geo import haversine_km
+from src.risk_surface import point_risk
 from src.routing import find_safe_route
 from src.schemas import (
     BroadcastRequest,
@@ -69,18 +69,21 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(request: PredictionRequest):
-    severity = ml.predict_severity(request.area, request.type, request.timestamp)
+    """
+    Risk at any point on the map - not restricted to a fixed list of named
+    areas. Real incidents happen anywhere, anytime, and possibly several at
+    once; this reads the same continuous, recency-weighted spatial surface
+    that /route/safe uses, filtered to the queried incident type's category.
+    """
+    score, severity = point_risk(request.latitude, request.longitude, request.type)
     return PredictionResponse(
-        area=request.area,
+        latitude=request.latitude,
+        longitude=request.longitude,
         type=request.type,
+        risk_score=round(score, 3),
         predicted_severity=severity,
-        message=f"Predicted {request.type} risk in {request.area} is {severity}",
+        message=f"Predicted {request.type} risk at this location is {severity}",
     )
-
-
-@app.get("/model/known-values")
-def model_known_values():
-    return {"areas": ml.known_areas(), "types": ml.known_types()}
 
 
 # -------------------------------------------------------------------
@@ -103,13 +106,13 @@ def safe_route(request: SafeRouteRequest):
 # -------------------------------------------------------------------
 
 def _insert_incident(source: str, report: IncidentReport) -> int:
-    severity = ml.predict_severity(report.area, report.type, report.timestamp)
+    _, severity = point_risk(report.latitude, report.longitude, report.type)
     conn = get_connection()
     cursor = conn.execute(
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (source, report.type.strip().lower(), report.area.strip().title(),
+        (source, report.type.strip().lower(), report.area.strip(),
          report.latitude, report.longitude, report.description, severity, report.timestamp),
     )
     conn.commit()

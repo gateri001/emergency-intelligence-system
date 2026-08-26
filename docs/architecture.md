@@ -9,22 +9,34 @@ single risk picture, fast enough to act on.
 
 ```
 Citizen reports (app/USSD/SMS)  ─┐
-Officer reports (app)           ─┼─► /report/* endpoints ─► severity model ─► incidents table
+Officer reports (app)           ─┼─► /report/* endpoints ─► risk_surface.point_risk() ─► incidents table
 Bulk imports (open data feeds)  ─┘                                │
                                                                     ▼
-                                                          dashboard + /incidents API
+                                                          dashboard + /predict API
 ```
 
 1. **Ingestion** — three entry points (`/report/citizen`, `/report/officer`,
    `/report/bulk`) write into one `incidents` table. Citizen reports are
    open; officer and bulk reports require an authenticated officer account.
-2. **Risk scoring** — every incident is scored on submission (area, type,
-   time of day → predicted severity) using a model trained on
-   `scripts/train_model.py`. The model is a plain baseline (Random Forest);
-   it is deliberately simple and swappable, not the end state.
+   Every report requires real coordinates (`latitude`/`longitude`) - `area`
+   is an optional free-text label for display only, never used for scoring.
+2. **Risk scoring** (`src/risk_surface.py`) — real incidents can happen
+   anywhere, at any time, and several at once; there is no fixed list of
+   "the areas that matter." So risk isn't a lookup against named places -
+   it's a continuous surface: every point on the map gets a risk score from
+   a distance- and recency-weighted kernel over nearby incidents (closer and
+   more recent incidents count more), optionally filtered to one hazard
+   category (crime/hazard/medical) so a flood query isn't muddied by
+   unrelated crime history at the same spot. `point_risk(lat, lon, type)` is
+   the one function both `/predict` and incident-ingestion scoring call -
+   one model, not two. An earlier version of this scored incidents with a
+   RandomForest trained on 16 hardcoded area *names* as categorical labels;
+   that's been removed - it couldn't answer for any location outside that
+   fixed list, which defeats the point of "anywhere, anytime."
 3. **Serving** — `/incidents` and `/predict` feed the dashboard
    (`static/index.html`), which shows recent reports on a map and lets
-   anyone check predicted risk for an area/type combination.
+   anyone click any point and check predicted risk there - not limited to a
+   dropdown of named areas.
 4. **Safe routing** (`src/risk_surface.py`, `src/routing.py`) — turns raw
    incidents into a continuous spatial risk surface (a grid, each cell
    scored by distance- and recency-weighted nearby incidents — closer and
@@ -90,6 +102,10 @@ Bulk imports (open data feeds)  ─┘                                │
   means "lowest-risk nearby cell," not a verified point of safety.
 - Cell Broadcast (SMS-CB) for true no-opt-in-required reach — current
   broadcast only reaches people who've subscribed via `/subscribers`.
+- Calibrated/absolute risk scores — the 0-1 risk value is normalized
+  relative to the current data's own maximum, not an absolute probability.
+  Severity buckets (Low/Medium/High, thresholds in
+  `risk_surface.severity_bucket`) will shift as more data comes in.
 
 ## Data
 

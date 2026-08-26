@@ -25,14 +25,29 @@ KM_PER_DEG_LAT = 111.0
 KM_PER_DEG_LON = 111.0 * np.cos(np.radians(_REFERENCE_LAT))
 
 
-def _load_points():
-    """Returns an (N, 4) array of [lat, lon, weight, age_days]."""
+# Incident type -> broad category, so a query about "robbery" doesn't get
+# muddied by unrelated flood history at the same point, and vice versa.
+TYPE_CATEGORY = {
+    "burglary": "crime", "robbery": "crime", "theft": "crime", "assault": "crime",
+    "vandalism": "crime", "suspicious_activity": "crime",
+    "flood": "hazard", "fire": "hazard",
+    "accident": "medical", "medical_emergency": "medical",
+}
+
+
+def _load_points(category: str | None = None):
+    """Returns an (N, 4) array of [lat, lon, weight, age_days]. No area names
+    anywhere - every point is real coordinates, so this covers any location,
+    not a fixed list. `category` optionally filters to one hazard family
+    (crime/hazard/medical); None uses everything."""
     now = datetime.now()
     rows = []
 
     csv_path = Path(__file__).resolve().parent.parent / "data" / "synthetic_incidents.csv"
     if csv_path.exists():
         df = pd.read_csv(csv_path)
+        if category:
+            df = df[df["category"] == category]
         for _, r in df.iterrows():
             dt = datetime.strptime(r["date"], "%Y-%m-%d")
             age = max((now - dt).days, 0)
@@ -41,11 +56,13 @@ def _load_points():
 
     conn = get_connection()
     live = conn.execute(
-        "SELECT latitude, longitude, predicted_severity, timestamp FROM incidents "
+        "SELECT latitude, longitude, type, predicted_severity, timestamp FROM incidents "
         "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
     ).fetchall()
     conn.close()
     for r in live:
+        if category and TYPE_CATEGORY.get(r["type"]) != category:
+            continue
         try:
             dt = datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M")
         except ValueError:
@@ -58,10 +75,12 @@ def _load_points():
     return np.array(rows) if rows else np.zeros((0, 4))
 
 
-def build_risk_grid(half_life_days: float = 30.0, spatial_bandwidth_km: float = 1.2):
+def build_risk_grid(half_life_days: float = 30.0, spatial_bandwidth_km: float = 1.2,
+                     category: str | None = None):
     """
     Returns (grid, lat_centers, lon_centers).
-    grid[i, j] is a 0-1 normalized risk score for that cell.
+    grid[i, j] is a 0-1 normalized risk score for that cell, relative to the
+    current data's own max - not an absolute/calibrated probability.
     """
     lat_edges = np.linspace(LAT_MIN, LAT_MAX, GRID_SIZE + 1)
     lon_edges = np.linspace(LON_MIN, LON_MAX, GRID_SIZE + 1)
@@ -69,7 +88,7 @@ def build_risk_grid(half_life_days: float = 30.0, spatial_bandwidth_km: float = 
     lon_centers = (lon_edges[:-1] + lon_edges[1:]) / 2
 
     grid = np.zeros((GRID_SIZE, GRID_SIZE))
-    points = _load_points()
+    points = _load_points(category)
     if len(points) == 0:
         return grid, lat_centers, lon_centers
 
@@ -88,3 +107,25 @@ def build_risk_grid(half_life_days: float = 30.0, spatial_bandwidth_km: float = 
     if grid.max() > 0:
         grid = grid / grid.max()
     return grid, lat_centers, lon_centers
+
+
+def severity_bucket(risk_value: float) -> str:
+    if risk_value >= 0.66:
+        return "High"
+    if risk_value >= 0.33:
+        return "Medium"
+    return "Low"
+
+
+def point_risk(lat: float, lon: float, incident_type: str | None = None):
+    """
+    Risk at any (lat, lon) - not restricted to a fixed list of places. This
+    is the single risk model the whole system uses now (prediction, incident
+    scoring, and routing all read from the same surface).
+    """
+    category = TYPE_CATEGORY.get(incident_type) if incident_type else None
+    grid, lat_centers, lon_centers = build_risk_grid(category=category)
+    i = int(np.argmin(np.abs(lat_centers - lat)))
+    j = int(np.argmin(np.abs(lon_centers - lon)))
+    value = float(grid[i, j])
+    return value, severity_bucket(value)

@@ -14,9 +14,12 @@ python -m venv venv
 venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 
-# generate training data + train the severity model
+# generate the synthetic incident dataset the risk surface reads from
 python scripts/generate_synthetic_data.py
-python scripts/train_model.py
+
+# optional: real open data (GDACS is instant; UNOSAT downloads ~60MB once)
+python scripts/ingest_gdacs.py
+python scripts/ingest_unosat_flood.py
 
 # create an officer login (no default credentials ship in source)
 python scripts/create_officer.py <your-username>

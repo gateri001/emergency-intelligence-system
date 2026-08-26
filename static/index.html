@@ -30,6 +30,10 @@
   <div id="map"></div>
 
   <div class="sidebar">
+    <h3>Selected Location</h3>
+    <div class="result" id="selectedPoint">Click anywhere on the map to select a location — every action below works on any point, not a fixed list of areas.</div>
+    <button onclick="useMyLocation()">Use my current location instead</button>
+
     <h3>Report an Incident</h3>
     <select id="type">
       <option value="robbery">Robbery</option>
@@ -40,13 +44,11 @@
       <option value="medical_emergency">Medical Emergency</option>
       <option value="accident">Accident</option>
     </select>
-    <input id="area" placeholder="Area (e.g. Kibera)" />
     <input id="description" placeholder="Brief description (optional)" />
-    <button onclick="reportIncident()">Submit Report</button>
+    <button onclick="reportIncident()">Submit Report at Selected Location</button>
     <div class="result" id="reportResult"></div>
 
     <h3>Risk Prediction</h3>
-    <input id="predictArea" placeholder="Area" />
     <select id="predictType">
       <option value="robbery">Robbery</option>
       <option value="burglary">Burglary</option>
@@ -54,11 +56,11 @@
       <option value="flood">Flood</option>
       <option value="fire">Fire</option>
     </select>
-    <button onclick="predictRisk()">Check Risk</button>
+    <button onclick="predictRisk()">Check Risk at Selected Location</button>
     <div class="result" id="predictionResult"></div>
 
     <h3>Find a Safe Route</h3>
-    <button onclick="findSafeRoute()">Use my location</button>
+    <button onclick="requestRoute(selected.lat, selected.lon)">Route From Selected Location</button>
     <div class="result" id="routeResult"></div>
 
     <h3>Recent Incidents</h3>
@@ -84,10 +86,46 @@ function nowTimestamp() {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Single source of truth for "where on the map are we acting" - every
+// action (report, predict, route) reads from this. No fixed area list;
+// any point you click or your real location works the same way.
+let selected = null;
+let selectedMarker = null;
+
+function setSelected(lat, lon) {
+  selected = { lat, lon };
+  document.getElementById('selectedPoint').innerText = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  if (selectedMarker) map.removeLayer(selectedMarker);
+  selectedMarker = L.marker([lat, lon]).addTo(map);
+}
+
+map.on('click', (e) => setSelected(e.latlng.lat, e.latlng.lng));
+
+function useMyLocation() {
+  if (!navigator.geolocation) {
+    document.getElementById('selectedPoint').innerText = 'Geolocation not supported by this browser.';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => setSelected(pos.coords.latitude, pos.coords.longitude),
+    () => { document.getElementById('selectedPoint').innerText = 'Could not get your location — click the map instead.'; }
+  );
+}
+
+function requireSelected(resultElId) {
+  if (!selected) {
+    document.getElementById(resultElId).innerText = 'Select a location on the map first.';
+    return false;
+  }
+  return true;
+}
+
 async function reportIncident() {
+  if (!requireSelected('reportResult')) return;
   const body = {
     type: document.getElementById('type').value,
-    area: document.getElementById('area').value,
+    latitude: selected.lat,
+    longitude: selected.lon,
     description: document.getElementById('description').value,
     timestamp: nowTimestamp()
   };
@@ -101,10 +139,11 @@ async function reportIncident() {
 }
 
 async function predictRisk() {
+  if (!requireSelected('predictionResult')) return;
   const body = {
-    area: document.getElementById('predictArea').value,
+    latitude: selected.lat,
+    longitude: selected.lon,
     type: document.getElementById('predictType').value,
-    timestamp: nowTimestamp()
   };
   const res = await fetch(`${API}/predict`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
@@ -112,7 +151,7 @@ async function predictRisk() {
   const data = await res.json();
   const el = document.getElementById('predictionResult');
   if (res.ok) {
-    el.innerHTML = `Predicted risk: <span class="severity-${data.predicted_severity}">${data.predicted_severity}</span>`;
+    el.innerHTML = `Predicted risk: <span class="severity-${data.predicted_severity}">${data.predicted_severity}</span> (score ${data.risk_score})`;
   } else {
     el.innerText = data.detail || 'Error getting prediction';
   }
@@ -139,26 +178,9 @@ async function loadRecent() {
 let routeLayer = null;
 let routeMarkers = [];
 
-function findSafeRoute() {
-  const resultEl = document.getElementById('routeResult');
-  if (!navigator.geolocation) {
-    resultEl.innerText = 'Geolocation not supported by this browser.';
-    return;
-  }
-  resultEl.innerText = 'Locating…';
-  navigator.geolocation.getCurrentPosition(async (pos) => {
-    const { latitude, longitude } = pos.coords;
-    await requestRoute(latitude, longitude);
-  }, () => {
-    resultEl.innerText = 'Could not get your location — click the map instead.';
-  });
-}
-
-// Fallback / manual testing: click anywhere on the map to route from there.
-map.on('click', (e) => requestRoute(e.latlng.lat, e.latlng.lng));
-
 async function requestRoute(lat, lon) {
   const resultEl = document.getElementById('routeResult');
+  if (!lat || !lon) { resultEl.innerText = 'Select a location on the map first.'; return; }
   resultEl.innerText = 'Finding safest route…';
   const res = await fetch(`${API}/route/safe`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},

@@ -3,11 +3,14 @@ from pydantic import BaseModel, Field
 
 class IncidentReport(BaseModel):
     type: str = Field(..., examples=["robbery", "flood", "fire", "medical_emergency"])
-    area: str = Field(..., examples=["Kibera", "Kayole", "CBD"])
+    # Real coordinates, required - risk scoring is point-based, not tied to a
+    # fixed list of named places. `area` is an optional human-readable label
+    # only (for display), never used for scoring.
+    latitude: float
+    longitude: float
+    area: str = Field("", examples=["near Kibera market"], description="Optional free-text label, not used for scoring")
     description: str = ""
     timestamp: str = Field(..., examples=["2026-08-25 14:30"])
-    latitude: float | None = None
-    longitude: float | None = None
 
 
 class BulkReportRequest(BaseModel):
@@ -16,14 +19,16 @@ class BulkReportRequest(BaseModel):
 
 
 class PredictionRequest(BaseModel):
-    area: str
+    latitude: float
+    longitude: float
     type: str
-    timestamp: str
 
 
 class PredictionResponse(BaseModel):
-    area: str
+    latitude: float
+    longitude: float
     type: str
+    risk_score: float
     predicted_severity: str
     message: str
 
