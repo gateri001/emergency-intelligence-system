@@ -1,15 +1,29 @@
 """
-Risk-aware routing: A* search over the risk grid from `risk_surface`, to the
-nearest genuinely-safer zone, minimizing distance *and* risk exposure along
-the way - not just straight-line nearest-exit, and not full street-level
-turn-by-turn (that needs a real road graph, out of scope for now).
+Risk-aware routing: A* search over a *local* risk grid from `risk_surface`,
+to the nearest genuinely-safer zone, minimizing distance *and* risk exposure
+along the way - not just straight-line nearest-exit, and not full
+street-level turn-by-turn (that needs a real road graph, out of scope for
+now).
+
+Deliberately builds its own fine-grained grid around the query point rather
+than searching the national risk_surface grid: routing needs city-block
+resolution to be useful ("which street", not "which province"), and a
+"nearest safe zone" search shouldn't be able to wander hundreds of km away
+on a coarse national grid just because that's the grid that happened to be
+built for a different purpose (general risk lookup / broadcast targeting).
 """
 import heapq
 import itertools
 
 import numpy as np
 
-from src.risk_surface import GRID_SIZE, KM_PER_DEG_LAT, KM_PER_DEG_LON, build_risk_grid
+from src.risk_surface import KM_PER_DEG_LAT, KM_PER_DEG_LON, build_risk_grid
+
+# Local grid window around the query point: ~0.15 deg of lat is roughly a
+# 33km-wide box at this resolution/size -> ~800m cells, fine enough for a
+# real "walk this way" route without paying national-grid build cost.
+LOCAL_HALF_WINDOW_DEG = 0.15
+LOCAL_GRID_SIZE = 40
 
 
 def _nearest_cell(lat, lon, lat_centers, lon_centers):
@@ -18,12 +32,12 @@ def _nearest_cell(lat, lon, lat_centers, lon_centers):
     return i, j
 
 
-def _pick_safe_zone(grid, start, min_cell_dist=2, search_radius=25):
+def _pick_safe_zone(grid, start, size, min_cell_dist=2, search_radius=25):
     """Lowest-risk cell reachable within search_radius, preferring closer among ties."""
     si, sj = start
     best_key, best_cell = None, None
-    for i in range(max(0, si - search_radius), min(GRID_SIZE, si + search_radius + 1)):
-        for j in range(max(0, sj - search_radius), min(GRID_SIZE, sj + search_radius + 1)):
+    for i in range(max(0, si - search_radius), min(size, si + search_radius + 1)):
+        for j in range(max(0, sj - search_radius), min(size, sj + search_radius + 1)):
             dist = ((i - si) ** 2 + (j - sj) ** 2) ** 0.5
             if dist < min_cell_dist:
                 continue
@@ -33,7 +47,7 @@ def _pick_safe_zone(grid, start, min_cell_dist=2, search_radius=25):
     return best_cell
 
 
-def _astar(grid, start, goal, risk_penalty):
+def _astar(grid, start, goal, risk_penalty, size):
     counter = itertools.count()
 
     def h(node):
@@ -57,7 +71,7 @@ def _astar(grid, start, goal, risk_penalty):
                 if di == 0 and dj == 0:
                     continue
                 ni, nj = ci + di, cj + dj
-                if not (0 <= ni < GRID_SIZE and 0 <= nj < GRID_SIZE):
+                if not (0 <= ni < size and 0 <= nj < size):
                     continue
                 neighbor = (ni, nj)
                 if neighbor in closed:
@@ -88,13 +102,22 @@ def find_safe_route(start_lat: float, start_lon: float, risk_penalty: float = 4.
     taking the shortest path - 0 = ignore risk entirely, higher = detour
     more readily to stay in safer cells.
     """
-    grid, lat_centers, lon_centers = build_risk_grid()
+    bbox = (
+        start_lat - LOCAL_HALF_WINDOW_DEG, start_lon - LOCAL_HALF_WINDOW_DEG,
+        start_lat + LOCAL_HALF_WINDOW_DEG, start_lon + LOCAL_HALF_WINDOW_DEG,
+    )
+    # Tighter bandwidth than the national default (6km) - this grid's cells
+    # are ~800m, so risk needs to vary over a similarly local scale to mean
+    # anything for routing.
+    grid, lat_centers, lon_centers = build_risk_grid(bbox=bbox, grid_size=LOCAL_GRID_SIZE, spatial_bandwidth_km=1.2)
+    size = grid.shape[0]
+
     start = _nearest_cell(start_lat, start_lon, lat_centers, lon_centers)
-    goal = _pick_safe_zone(grid, start)
+    goal = _pick_safe_zone(grid, start, size)
     if goal is None:
         return None
 
-    path = _astar(grid, start, goal, risk_penalty)
+    path = _astar(grid, start, goal, risk_penalty, size)
     if path is None:
         return None
 

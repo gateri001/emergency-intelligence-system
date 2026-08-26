@@ -15,12 +15,17 @@ from src.database import get_connection
 
 SEVERITY_WEIGHT = {"Low": 1.0, "Medium": 2.0, "High": 3.5}
 
-# Bounding box covering the Nairobi-area locations used in the synthetic dataset.
-LAT_MIN, LAT_MAX = -1.40, -1.00
-LON_MIN, LON_MAX = 36.60, 37.15
-GRID_SIZE = 40
+# Real Kenya bounding box (matches scripts/ingest_firms.py) - incidents
+# happen nationwide, not just in Nairobi. GRID_SIZE=100 trades resolution
+# (~10km/cell vs ~1.1km/cell when this was Nairobi-only) for a build that's
+# still fast enough to run per-request; a real fix (only build/search a
+# local window around the query point, or cache+invalidate) is flagged as
+# a known follow-up, not solved here - see docs/architecture.md.
+LAT_MIN, LAT_MAX = -4.72, 5.03
+LON_MIN, LON_MAX = 33.5, 41.91
+GRID_SIZE = 100
 
-_REFERENCE_LAT = -1.3  # for lon->km conversion; Nairobi's latitude range is small enough this holds
+_REFERENCE_LAT = -0.5  # rough national-average latitude for lon->km conversion
 KM_PER_DEG_LAT = 111.0
 KM_PER_DEG_LON = 111.0 * np.cos(np.radians(_REFERENCE_LAT))
 
@@ -75,19 +80,28 @@ def _load_points(category: str | None = None):
     return np.array(rows) if rows else np.zeros((0, 4))
 
 
-def build_risk_grid(half_life_days: float = 30.0, spatial_bandwidth_km: float = 1.2,
-                     category: str | None = None):
+def build_risk_grid(half_life_days: float = 30.0, spatial_bandwidth_km: float = 6.0,
+                     category: str | None = None, bbox: tuple | None = None,
+                     grid_size: int | None = None):
     """
     Returns (grid, lat_centers, lon_centers).
     grid[i, j] is a 0-1 normalized risk score for that cell, relative to the
     current data's own max - not an absolute/calibrated probability.
+
+    `bbox` (lat_min, lon_min, lat_max, lon_max) and `grid_size` default to
+    the national box/resolution, but callers that need finer detail in one
+    area (safe-routing) can pass a tighter bbox with a smaller grid_size to
+    get city-block resolution there without paying for it everywhere.
     """
-    lat_edges = np.linspace(LAT_MIN, LAT_MAX, GRID_SIZE + 1)
-    lon_edges = np.linspace(LON_MIN, LON_MAX, GRID_SIZE + 1)
+    lat_min, lon_min, lat_max, lon_max = bbox or (LAT_MIN, LON_MIN, LAT_MAX, LON_MAX)
+    size = grid_size or GRID_SIZE
+
+    lat_edges = np.linspace(lat_min, lat_max, size + 1)
+    lon_edges = np.linspace(lon_min, lon_max, size + 1)
     lat_centers = (lat_edges[:-1] + lat_edges[1:]) / 2
     lon_centers = (lon_edges[:-1] + lon_edges[1:]) / 2
 
-    grid = np.zeros((GRID_SIZE, GRID_SIZE))
+    grid = np.zeros((size, size))
     points = _load_points(category)
     if len(points) == 0:
         return grid, lat_centers, lon_centers
