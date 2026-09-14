@@ -11,10 +11,15 @@ trustworthy with people's information from day one, not as an afterthought
 - **Incident reports**: type, area (not exact home address), approximate
   coordinates, a short description, and a timestamp.
 - **Officer accounts**: a username and a hashed password. Passwords are
-  never stored in plain text (bcrypt hashing via `passlib`).
+  never stored in plain text (bcrypt hashing, called directly).
 
 No names, phone numbers, or national ID numbers are collected as part of an
-**incident report** itself.
+**incident report** itself. This is deliberate, not incidental: a reporter
+choosing "officers only" visibility on a report (e.g. witnessing a crime in
+progress) is protected in part *because* there is no identity field to leak
+in the first place — officers see the report content, never who filed it.
+The same is true of confirming or disputing someone else's report
+(`/report/{id}/vote`): no identity is attached to a vote either.
 
 - **Alert subscribers**: a phone number and an approximate location, collected
   only when someone explicitly opts in via `/subscribers` to receive area
@@ -29,7 +34,10 @@ No names, phone numbers, or national ID numbers are collected as part of an
 - Incident and officer data lives in a local SQLite database
   (`eis.db`, excluded from version control via `.gitignore`).
 - Auth uses signed JWT tokens, not stored sessions; the signing secret is
-  read from an environment variable, never hardcoded in source.
+  read from the `EIS_SECRET_KEY` environment variable. If it isn't set, a
+  random secret is generated per process start rather than falling back to
+  a fixed value in source - a hardcoded fallback would be visible to
+  anyone reading this public repository.
 
 ## Training data
 

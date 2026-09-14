@@ -1,12 +1,17 @@
 import json
+from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.broadcast import get_provider
+from src.confidence import alert_tier, apply_vote, compute_initial_confidence, count_nearby_reports
 from src.database import get_connection, init_db
 from src.geo import haversine_km
 from src.risk_surface import point_risk
@@ -22,9 +27,26 @@ from src.schemas import (
     SafeRouteRequest,
     SafeRouteResponse,
     SubscriberIn,
+    VoteRequest,
 )
 
-app = FastAPI(title="Emergency Intelligence System", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Emergency Intelligence System", version="0.1.0", lifespan=lifespan)
+
+# Public, unauthenticated endpoints (citizen reports, subscribing, voting)
+# are the system's real attack surface - anyone can call them, and a report
+# can trigger a real SMS broadcast downstream. Rate limiting is the cheap,
+# scrappy first line of defense against spam and fabricated-panic flooding;
+# per-IP is a known-weak signal (shared NAT, mobile carriers) but a real
+# improvement over no limit at all, and free to run.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,11 +55,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
 
 
 @app.get("/")
@@ -68,21 +85,22 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 # -------------------------------------------------------------------
 
 @app.post("/predict", response_model=PredictionResponse)
-def predict(request: PredictionRequest):
+@limiter.limit("30/minute")
+def predict(request: Request, body: PredictionRequest):
     """
     Risk at any point on the map - not restricted to a fixed list of named
     areas. Real incidents happen anywhere, anytime, and possibly several at
     once; this reads the same continuous, recency-weighted spatial surface
     that /route/safe uses, filtered to the queried incident type's category.
     """
-    score, severity = point_risk(request.latitude, request.longitude, request.type)
+    score, severity = point_risk(body.latitude, body.longitude, body.type)
     return PredictionResponse(
-        latitude=request.latitude,
-        longitude=request.longitude,
-        type=request.type,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        type=body.type,
         risk_score=round(score, 3),
         predicted_severity=severity,
-        message=f"Predicted {request.type} risk at this location is {severity}",
+        message=f"Predicted {body.type} risk at this location is {severity}",
     )
 
 
@@ -91,8 +109,9 @@ def predict(request: PredictionRequest):
 # -------------------------------------------------------------------
 
 @app.post("/route/safe", response_model=SafeRouteResponse)
-def safe_route(request: SafeRouteRequest):
-    result = find_safe_route(request.latitude, request.longitude, request.risk_aversion)
+@limiter.limit("20/minute")
+def safe_route(request: Request, body: SafeRouteRequest):
+    result = find_safe_route(body.latitude, body.longitude, body.risk_aversion)
     if result is None:
         raise HTTPException(
             status_code=404,
@@ -107,13 +126,23 @@ def safe_route(request: SafeRouteRequest):
 
 def _insert_incident(source: str, report: IncidentReport) -> int:
     _, severity = point_risk(report.latitude, report.longitude, report.type)
+    incident_type = report.type.strip().lower()
+
     conn = get_connection()
+    # Corroboration signal computed BEFORE inserting this report, so it
+    # doesn't count itself.
+    nearby = count_nearby_reports(conn, report.latitude, report.longitude, incident_type, report.timestamp)
+    confidence = compute_initial_confidence(source, incident_type, report.has_evidence, nearby)
+    tier = alert_tier(confidence, incident_type)
+
     cursor = conn.execute(
         """INSERT INTO incidents
-           (source, type, area, latitude, longitude, description, predicted_severity, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (source, report.type.strip().lower(), report.area.strip(),
-         report.latitude, report.longitude, report.description, severity, report.timestamp),
+           (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
+            visibility, has_evidence, confidence_score, corroboration_count, alert_tier)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (source, incident_type, report.area.strip(),
+         report.latitude, report.longitude, report.description, severity, report.timestamp,
+         report.visibility, int(report.has_evidence), confidence, 0, tier),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -122,7 +151,8 @@ def _insert_incident(source: str, report: IncidentReport) -> int:
 
 
 @app.post("/report/citizen")
-def report_citizen(report: IncidentReport):
+@limiter.limit("10/minute")
+def report_citizen(request: Request, report: IncidentReport):
     incident_id = _insert_incident("citizen", report)
     return {"status": "received", "incident_id": incident_id}
 
@@ -139,11 +169,80 @@ def report_bulk(request: BulkReportRequest, officer: str = Depends(get_current_o
     return {"status": "received", "count": len(ids), "incident_ids": ids, "logged_by": officer}
 
 
+@app.post("/report/{incident_id}/vote", response_model=IncidentOut)
+@limiter.limit("20/minute")
+def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
+    """
+    Crowd corroboration: anyone can confirm or dispute an existing report.
+    This is the mechanism that raises (or lowers) confidence after the
+    initial report - a report doesn't just sit at its starting score, it
+    moves as real people weigh in. No identity is collected here either, by
+    the same reasoning as reports themselves - voting shouldn't expose who
+    voted any more than reporting exposes who reported.
+    """
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    new_confidence = apply_vote(row["confidence_score"], row["type"], vote.confirm)
+    new_tier = alert_tier(new_confidence, row["type"])
+    new_corroboration = row["corroboration_count"] + (1 if vote.confirm else 0)
+
+    conn.execute(
+        "UPDATE incidents SET confidence_score = ?, alert_tier = ?, corroboration_count = ? WHERE id = ?",
+        (new_confidence, new_tier, new_corroboration, incident_id),
+    )
+    conn.commit()
+    updated = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    conn.close()
+    return IncidentOut(**dict(updated))
+
+
 @app.get("/incidents", response_model=list[IncidentOut])
 def list_incidents(limit: int = 100):
+    """
+    Public feed. Deliberately excludes visibility='officers_only' reports -
+    those exist so a witness to something dangerous (e.g. a crime in
+    progress) can reach responders without immediately broadcasting their
+    report - and by extension, their position - to everyone, including
+    whoever they just reported. See /incidents/all for the officer view.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM incidents WHERE visibility = 'public' ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [IncidentOut(**dict(row)) for row in rows]
+
+
+@app.get("/incidents/all", response_model=list[IncidentOut])
+def list_incidents_all(limit: int = 100, officer: str = Depends(get_current_officer)):
+    """Officer view: includes officers_only reports. Still never exposes a
+    reporter identity, because none is ever collected in the first place."""
     conn = get_connection()
     rows = conn.execute(
         "SELECT * FROM incidents ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [IncidentOut(**dict(row)) for row in rows]
+
+
+@app.get("/alert/recommended", response_model=list[IncidentOut])
+def list_recommended_alerts(officer: str = Depends(get_current_officer)):
+    """
+    Incidents whose confidence has crossed the sms_recommended or critical
+    threshold for their category - i.e. the system's recommendation of what
+    an officer should consider broadcasting via /alert/broadcast. This is
+    surfaced, not auto-fired: a mass SMS is still a human decision (see
+    docs/architecture.md for why confidence-driven auto-broadcast was
+    deliberately not built yet).
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM incidents WHERE alert_tier IN ('sms_recommended', 'critical') "
+        "ORDER BY confidence_score DESC LIMIT 100"
     ).fetchall()
     conn.close()
     return [IncidentOut(**dict(row)) for row in rows]
@@ -154,7 +253,8 @@ def list_incidents(limit: int = 100):
 # -------------------------------------------------------------------
 
 @app.post("/subscribers")
-def add_subscriber(sub: SubscriberIn):
+@limiter.limit("10/minute")
+def add_subscriber(request: Request, sub: SubscriberIn):
     """Anyone can opt in to receive area alerts - no auth required to subscribe."""
     conn = get_connection()
     conn.execute(

@@ -23,9 +23,29 @@ def init_db():
             description TEXT,
             predicted_severity TEXT,
             timestamp TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            visibility TEXT NOT NULL DEFAULT 'public' CHECK(visibility IN ('public', 'officers_only')),
+            has_evidence INTEGER NOT NULL DEFAULT 0,
+            confidence_score REAL NOT NULL DEFAULT 0.0,
+            corroboration_count INTEGER NOT NULL DEFAULT 0,
+            alert_tier TEXT NOT NULL DEFAULT 'in_app'
         )
     """)
+    # Migration for databases created before visibility/confidence scoring
+    # existed - ALTER TABLE has no "IF NOT EXISTS" in sqlite, so try each and
+    # ignore "duplicate column" if it's already there.
+    for col_def in (
+        "visibility TEXT NOT NULL DEFAULT 'public'",
+        "has_evidence INTEGER NOT NULL DEFAULT 0",
+        "confidence_score REAL NOT NULL DEFAULT 0.0",
+        "corroboration_count INTEGER NOT NULL DEFAULT 0",
+        "alert_tier TEXT NOT NULL DEFAULT 'in_app'",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     conn.execute("""
         CREATE TABLE IF NOT EXISTS officers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

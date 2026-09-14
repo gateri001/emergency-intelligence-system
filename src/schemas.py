@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -11,6 +13,18 @@ class IncidentReport(BaseModel):
     area: str = Field("", examples=["near Kibera market"], description="Optional free-text label, not used for scoring")
     description: str = ""
     timestamp: str = Field(..., examples=["2026-08-25 14:30"])
+    # Reporter-chosen visibility: "officers_only" keeps a time-critical but
+    # unverified report (e.g. a witnessed crime in progress) out of the
+    # public feed so the reporter isn't put at risk before responders can
+    # act. No reporter identity is ever collected on this model in the first
+    # place, so officers never see who filed an officers_only report either.
+    visibility: Literal["public", "officers_only"] = "public"
+    # Scrappy stand-in for real evidence upload (no file storage built yet -
+    # logged as a deliberate skip, see docs/architecture.md): a
+    # self-attested "I have a photo/video of this" boolean that nudges
+    # confidence up slightly. Lying about it is possible; it's one signal
+    # among several (source trust, corroboration), not the whole score.
+    has_evidence: bool = False
 
 
 class BulkReportRequest(BaseModel):
@@ -82,3 +96,12 @@ class IncidentOut(BaseModel):
     description: str
     predicted_severity: str | None
     timestamp: str
+    visibility: str = "public"
+    has_evidence: bool = False
+    confidence_score: float = 0.0
+    corroboration_count: int = 0
+    alert_tier: str = "in_app"
+
+
+class VoteRequest(BaseModel):
+    confirm: bool = Field(..., description="True to corroborate the report, false to dispute it")

@@ -72,10 +72,14 @@ Bulk imports (open data feeds)  ─┘                                │
    The default provider (`ConsoleBroadcastProvider`) logs what would be
    sent rather than sending real SMS — this lets the whole pipeline
    (geo-targeting, audit trail, API contract) be built and tested before
-   there's a live SMS account behind it. `AfricasTalkingProvider` is
-   stubbed with the exact integration shape for when real credentials
-   exist; it deliberately refuses to run rather than pretend to send real
-   messages without them.
+   there's a live SMS account behind it. Two real providers exist, both
+   code-complete but unverified against a live account/device:
+   `SMSGateProvider` (self-hosted, open-source, an Android phone with a
+   real SIM as your own gateway — no aggregator markup, the scrappy
+   no-funding default) and `AfricasTalkingProvider` (aggregator API, the
+   option to move to once there's funding and the delivery guarantees of a
+   paid provider are worth it). Both deliberately refuse to run rather than
+   pretend to send real messages without real credentials.
 
 6. **Real open data** (`scripts/ingest_gdacs.py`, `scripts/ingest_unosat_flood.py`) —
    two real, verified sources feed into the system alongside the synthetic
@@ -108,6 +112,43 @@ Bulk imports (open data feeds)  ─┘                                │
      uniformly across all 16 areas like before. This is real calibration,
      not just a visual add-on.
 
+## Confidence scoring, visibility scoping, and alert tiers
+
+**Visibility scoping** (`IncidentReport.visibility`, `public` | `officers_only`) -
+a reporter can keep a time-critical but unverified report (e.g. a crime
+witnessed in progress) out of the public feed entirely, so it reaches
+officers (`/incidents/all`) without exposing the reporter's presence/location
+to the person they just reported. `/incidents` (the public feed) filters
+`officers_only` reports out at the SQL level, not in the client - it never
+leaves the server. No reporter identity is collected on any report in the
+first place, so this isn't "hidden from the public but visible to officers
+including who sent it" - officers don't see who reported it either, by the
+same reasoning.
+
+**Confidence scoring** (`src/confidence.py`) - type-specific, not one
+universal formula, because the cost of a false positive differs by category:
+a fabricated flood report has essentially no motive, while a false crime
+accusation can cause real harm. A report starts at a base confidence set by
+its source (officer/bulk-verified-sensor reports start high; citizen reports
+start low-to-moderate, varying by category) and self-reported evidence,
+then gets a bonus for independent nearby reports of the same type within a
+2km/6hr window at creation time. After that, anyone can move it further via
+`POST /report/{id}/vote` (confirm raises it, dispute lowers it) - this is
+the crowd-corroboration mechanism, and it's anonymous by the same design
+choice as reporting itself.
+
+**Alert tiers** (`alert_tier()`): `in_app` -> `sms_recommended` -> `critical`,
+at category-specific thresholds (hazard/medical cross into `sms_recommended`
+at 30% confidence and `critical` at 60%, matching the original design
+discussion's illustrative numbers; crime is set higher - 50%/80% - since an
+unproven crime accusation reaching a wider audience carries real cost if
+wrong). **This tier is a recommendation, not an automatic trigger** -
+`GET /alert/recommended` (officer-only) surfaces incidents that have crossed
+a threshold, but actually sending an SMS broadcast still goes through the
+existing officer-gated `/alert/broadcast` endpoint. Auto-firing a real mass
+SMS off a brand-new, unvalidated scrappy heuristic was a deliberate line not
+to cross yet - see "Explicitly not yet built" below.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not
@@ -131,6 +172,36 @@ Bulk imports (open data feeds)  ─┘                                │
   relative to the current data's own maximum, not an absolute probability.
   Severity buckets (Low/Medium/High, thresholds in
   `risk_surface.severity_bucket`) will shift as more data comes in.
+- Real evidence upload — `has_evidence` is a self-attested boolean, not an
+  actual photo/video upload with storage, moderation, or reporter-safety
+  review before display. No file storage infrastructure exists yet; this
+  was scoped down deliberately for the pilot rather than left unaddressed.
+- Automatic SMS/alert triggering off confidence score — `alert_tier` is
+  computed and surfaced (`/alert/recommended`) but does not fire a real
+  broadcast by itself. See "Confidence scoring, visibility scoping, and
+  alert tiers" above for why.
+- The full role/permission model — only citizen (unauthenticated) and
+  officer (JWT-authenticated) exist. Verified-reporter, trusted-verifier,
+  admin, and NGO/government-partner tiers are designed in conversation, not
+  built.
+- Tier-3 "unmissable" full-screen takeover alerts (alarm sound, blocked
+  screen, deliberate multi-step dismissal) — confirmed technically feasible
+  on Android via full-screen intent notifications, not possible on iOS
+  through a normal app (Apple restricts this to their own Critical Alerts
+  entitlement, sound+notification only, specially approved per app). Also
+  requires a native app - a browser/PWA cannot take over the screen this
+  way. Out of scope until the native app exists.
+- Live satellite/hydrological cross-referencing for flood confidence —
+  Copernicus GloFAS/Sentinel-1 Global Flood Monitoring is the identified
+  real, free, self-serve source (see session notes), not yet integrated.
+  Google Flood Hub is live and free but its API is currently waitlist-gated.
+- Real SMS delivery is code-complete but UNTESTED against a live account -
+  `AfricasTalkingProvider` (`src/broadcast.py`) implements the actual SDK
+  call, but no real AT_USERNAME/AT_API_KEY have been used against it yet.
+  Treat the first real send as a test, not a known-working path.
+- A hardcoded JWT secret fallback was removed (`src/auth.py` now generates a
+  random per-process secret if `EIS_SECRET_KEY` isn't set) but no real
+  secret has been provisioned for any actual deployment yet.
 
 ## Data
 

@@ -1,15 +1,31 @@
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+from jwt import PyJWTError
 
 from src.database import get_connection
 
-# In production this MUST come from a real secret store, not a default.
-SECRET_KEY = os.environ.get("EIS_SECRET_KEY", "dev-only-change-me")
+# This repo is public on GitHub - a hardcoded fallback secret here would be
+# visible to anyone and would let them forge valid officer tokens on any
+# deployment that forgot to set EIS_SECRET_KEY. Instead, fall back to a
+# random secret generated fresh per process start: local dev still works
+# with zero setup, but every restart invalidates old tokens (a mild
+# inconvenience) rather than shipping a guessable one (a real
+# vulnerability). Set EIS_SECRET_KEY explicitly for any real deployment so
+# tokens survive restarts.
+SECRET_KEY = os.environ.get("EIS_SECRET_KEY")
+if not SECRET_KEY:
+    print(
+        "WARNING: EIS_SECRET_KEY not set - using a random per-process secret. "
+        "Officer tokens will stop working on restart. Set EIS_SECRET_KEY "
+        "(32+ random bytes) before any real deployment."
+    )
+    SECRET_KEY = secrets.token_hex(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8
 
@@ -50,5 +66,5 @@ def get_current_officer(token: str = Depends(oauth2_scheme)) -> str:
         if username is None:
             raise credentials_exception
         return username
-    except JWTError:
+    except PyJWTError:
         raise credentials_exception

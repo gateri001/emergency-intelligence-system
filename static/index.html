@@ -19,6 +19,11 @@
   .severity-High { color: #f87171; font-weight: bold; }
   .severity-Medium { color: #fbbf24; font-weight: bold; }
   .severity-Low { color: #34d399; font-weight: bold; }
+  .tier-critical { color: #f87171; font-weight: bold; }
+  .tier-sms_recommended { color: #fbbf24; font-weight: bold; }
+  .tier-in_app { color: #9ca3af; }
+  .incident-row { padding: 6px 0; border-bottom: 1px solid #374151; }
+  .vote-btn { width: auto; display: inline-block; padding: 3px 8px; margin: 4px 4px 0 0; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -45,6 +50,13 @@
       <option value="accident">Accident</option>
     </select>
     <input id="description" placeholder="Brief description (optional)" />
+    <select id="visibility">
+      <option value="public">Visible to everyone nearby</option>
+      <option value="officers_only">Officers only (for your safety — e.g. reporting a crime in progress)</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;">
+      <input type="checkbox" id="hasEvidence" style="width:auto;margin:0;" /> I have a photo/video of this
+    </label>
     <button onclick="reportIncident()">Submit Report at Selected Location</button>
     <div class="result" id="reportResult"></div>
 
@@ -127,7 +139,9 @@ async function reportIncident() {
     latitude: selected.lat,
     longitude: selected.lon,
     description: document.getElementById('description').value,
-    timestamp: nowTimestamp()
+    timestamp: nowTimestamp(),
+    visibility: document.getElementById('visibility').value,
+    has_evidence: document.getElementById('hasEvidence').checked
   };
   const res = await fetch(`${API}/report/citizen`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
@@ -166,13 +180,25 @@ async function loadRecent() {
   const list = document.getElementById('recentList');
   list.innerHTML = data.length ? '' : 'No incidents yet.';
   data.forEach(inc => {
-    list.innerHTML += `<div>${inc.type} — ${inc.area} — <span class="severity-${inc.predicted_severity}">${inc.predicted_severity}</span></div>`;
+    list.innerHTML += `<div class="incident-row">
+      ${inc.type} — ${inc.area} — <span class="severity-${inc.predicted_severity}">${inc.predicted_severity}</span><br>
+      <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${inc.alert_tier}">${inc.alert_tier.replace('_',' ')}</span></small><br>
+      <button class="vote-btn" onclick="voteIncident(${inc.id}, true)">✓ Confirm</button>
+      <button class="vote-btn" onclick="voteIncident(${inc.id}, false)">✗ Dispute</button>
+    </div>`;
     if (inc.latitude && inc.longitude) {
       const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color: '#f87171' })
-        .addTo(map).bindPopup(`${inc.type} in ${inc.area} (${inc.predicted_severity})`);
+        .addTo(map).bindPopup(`${inc.type} in ${inc.area} (${inc.predicted_severity}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
       markers.push(m);
     }
   });
+}
+
+async function voteIncident(id, confirm) {
+  await fetch(`${API}/report/${id}/vote`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ confirm })
+  });
+  loadRecent();
 }
 
 let routeLayer = null;
