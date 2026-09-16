@@ -1,7 +1,7 @@
 import json
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -11,11 +11,13 @@ from slowapi.util import get_remote_address
 
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.broadcast import get_provider
-from src.confidence import alert_tier, apply_vote, compute_initial_confidence, count_nearby_reports, is_within_known_flood_zone
+from src.confidence import alert_tier, apply_vote, is_within_known_flood_zone
 from src.database import get_connection, init_db
 from src.geo import haversine_km
+from src.reflex import reflex_assessment
 from src.risk_surface import point_risk
 from src.routing import find_safe_route
+from src.strategic import refine_incident
 from src.schemas import (
     BroadcastRequest,
     BroadcastResponse,
@@ -125,49 +127,58 @@ def safe_route(request: Request, body: SafeRouteRequest):
 # Incident ingestion (citizen reports are public; officer/bulk require auth)
 # -------------------------------------------------------------------
 
-def _insert_incident(source: str, report: IncidentReport) -> int:
-    _, severity = point_risk(report.latitude, report.longitude, report.type)
+def _insert_incident(source: str, report: IncidentReport, background_tasks: BackgroundTasks) -> int:
+    """
+    Reflex-first ingestion: an instant, bounded-cost assessment (source
+    trust, evidence, known-flood-zone check - see src/reflex.py) is what
+    actually gets inserted and returned to the reporter. The slower,
+    fuller pass - nearby-report corroboration and risk-grid severity, both
+    of which scale with data volume - runs afterward as a background task
+    (src/strategic.py) and updates the row moments later. A reporter's
+    "received" response no longer waits on a full grid rebuild or table
+    scan; see docs/architecture.md for the reasoning and the R&D behind it.
+    """
     incident_type = report.type.strip().lower()
-
     conn = get_connection()
-    # Corroboration signal computed BEFORE inserting this report, so it
-    # doesn't count itself.
-    nearby = count_nearby_reports(conn, report.latitude, report.longitude, incident_type, report.timestamp)
-    ground_truth = is_within_known_flood_zone(conn, incident_type, report.latitude, report.longitude)
-    confidence = compute_initial_confidence(source, incident_type, report.has_evidence, nearby, ground_truth)
-    tier = alert_tier(confidence, incident_type)
+    flood_zone_hit = is_within_known_flood_zone(conn, incident_type, report.latitude, report.longitude)
+    confidence, tier = reflex_assessment(source, incident_type, report.has_evidence, flood_zone_hit)
 
     cursor = conn.execute(
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
             visibility, has_evidence, confidence_score, corroboration_count, alert_tier)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
         (source, incident_type, report.area.strip(),
-         report.latitude, report.longitude, report.description, severity, report.timestamp,
+         report.latitude, report.longitude, report.description, report.timestamp,
          report.visibility, int(report.has_evidence), confidence, 0, tier),
     )
     conn.commit()
     new_id = cursor.lastrowid
     conn.close()
+
+    background_tasks.add_task(
+        refine_incident, new_id, source, incident_type,
+        report.latitude, report.longitude, report.timestamp, report.has_evidence,
+    )
     return new_id
 
 
 @app.post("/report/citizen")
 @limiter.limit("10/minute")
-def report_citizen(request: Request, report: IncidentReport):
-    incident_id = _insert_incident("citizen", report)
+def report_citizen(request: Request, report: IncidentReport, background_tasks: BackgroundTasks):
+    incident_id = _insert_incident("citizen", report, background_tasks)
     return {"status": "received", "incident_id": incident_id}
 
 
 @app.post("/report/officer")
-def report_officer(report: IncidentReport, officer: str = Depends(get_current_officer)):
-    incident_id = _insert_incident("officer", report)
+def report_officer(report: IncidentReport, background_tasks: BackgroundTasks, officer: str = Depends(get_current_officer)):
+    incident_id = _insert_incident("officer", report, background_tasks)
     return {"status": "received", "incident_id": incident_id, "logged_by": officer}
 
 
 @app.post("/report/bulk")
-def report_bulk(request: BulkReportRequest, officer: str = Depends(get_current_officer)):
-    ids = [_insert_incident("bulk", r) for r in request.reports]
+def report_bulk(request: BulkReportRequest, background_tasks: BackgroundTasks, officer: str = Depends(get_current_officer)):
+    ids = [_insert_incident("bulk", r, background_tasks) for r in request.reports]
     return {"status": "received", "count": len(ids), "incident_ids": ids, "logged_by": officer}
 
 

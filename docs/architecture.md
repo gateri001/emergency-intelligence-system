@@ -20,6 +20,28 @@ Bulk imports (open data feeds)  ─┘                                │
    open; officer and bulk reports require an authenticated officer account.
    Every report requires real coordinates (`latitude`/`longitude`) - `area`
    is an optional free-text label for display only, never used for scoring.
+
+   Scoring is split into a **reflex layer** (`src/reflex.py`) and a
+   **strategic layer** (`src/strategic.py`), run synchronously and as a
+   FastAPI background task respectively. This mirrors a reflex/strategic
+   split validated separately in Triagia's core-engine R&D (a Crafter
+   prototype, n=10: a hierarchical fast/slow controller matched a
+   monolithic one on task performance with ~12x fewer expensive calls and
+   zero missed hazard events, versus the monolithic version's measured
+   ~4-tick average reaction latency and 10/48 missed events) - applied
+   here along EIS's own actual cost boundary, not copied blindly: reflex
+   covers what's cheap and bounded (source trust, evidence, a known-flood-
+   zone check bounded by the number of ingested disaster events); strategic
+   covers what grows with data volume (nearby-report corroboration, an
+   O(n) scan over the incidents table, and risk-grid severity, which
+   rebuilds the whole national grid). Measured against the real dev
+   database: the deferred strategic work alone took ~337ms in isolation,
+   while the actual HTTP response time dropped to ~18-130ms - a reporter no
+   longer waits on a full grid rebuild before getting "received," and the
+   confidence/tier/severity fields update moments later once strategic
+   completes. No new infrastructure - Starlette's BackgroundTasks run
+   in-process; if ingestion volume ever outgrows that, it's a clean seam to
+   swap in a real task queue without touching the reflex layer.
 2. **Risk scoring** (`src/risk_surface.py`) — real incidents can happen
    anywhere, at any time, and several at once; there is no fixed list of
    "the areas that matter." So risk isn't a lookup against named places -

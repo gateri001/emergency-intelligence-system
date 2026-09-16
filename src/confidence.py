@@ -138,11 +138,12 @@ def alert_tier(confidence: float, incident_type: str) -> str:
 
 def count_nearby_reports(conn, latitude: float, longitude: float, incident_type: str, timestamp: str,
                           radius_km: float = NEARBY_RADIUS_KM, window_hours: float = NEARBY_WINDOW_HOURS,
-                          exclude_source: str | None = None) -> int:
+                          exclude_source: str | None = None, exclude_id: int | None = None) -> int:
     """Independent reports of the same type, close in space and time - the
-    corroboration signal used at report-creation time. Distance is computed
-    in Python (haversine) rather than SQL since sqlite has no geo functions;
-    the incidents table is small enough for this MVP scale.
+    corroboration signal used by the strategic layer (src/strategic.py).
+    Distance is computed in Python (haversine) rather than SQL since
+    sqlite has no geo functions; the incidents table is small enough for
+    this MVP scale.
 
     `exclude_source`: a single real fire lights up several adjacent pixels
     in one satellite pass - those aren't independent corroboration the way
@@ -152,7 +153,13 @@ def count_nearby_reports(conn, latitude: float, longitude: float, incident_type:
     genuinely different source (a citizen or officer report), not from
     counting itself several times over. Citizen/officer reports don't need
     this - two different citizens reporting the same fire IS real
-    corroboration even though they share a source type."""
+    corroboration even though they share a source type.
+
+    `exclude_id`: the strategic layer runs after the report is already
+    inserted (see src/strategic.py), unlike the old single-pass pipeline
+    which computed this before insert - without excluding the report's own
+    row, it would trivially match itself (same location, same timestamp)
+    and inflate its own corroboration count by one every time."""
     from src.geo import haversine_km
 
     try:
@@ -160,12 +167,15 @@ def count_nearby_reports(conn, latitude: float, longitude: float, incident_type:
     except ValueError:
         ref_time = datetime.now()
 
-    rows = conn.execute(
-        "SELECT latitude, longitude, timestamp FROM incidents "
-        "WHERE type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL"
-        + (" AND source != ?" if exclude_source else ""),
-        (incident_type, exclude_source) if exclude_source else (incident_type,),
-    ).fetchall()
+    query = "SELECT latitude, longitude, timestamp FROM incidents WHERE type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL"
+    params = [incident_type]
+    if exclude_source:
+        query += " AND source != ?"
+        params.append(exclude_source)
+    if exclude_id is not None:
+        query += " AND id != ?"
+        params.append(exclude_id)
+    rows = conn.execute(query, params).fetchall()
 
     count = 0
     for r in rows:

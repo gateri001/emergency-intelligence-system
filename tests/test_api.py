@@ -127,6 +127,23 @@ def test_broadcast_warns_when_source_was_officers_only(client, officer_token):
     assert res2.json()["reporter_safety_warning"] is None
 
 
+def test_strategic_nearby_corroboration_excludes_the_reports_own_row(client):
+    """Regression test for the reflex/strategic split: strategic refinement
+    now runs AFTER insert, not before, so count_nearby_reports() must
+    exclude a report's own row or every report would trivially "corroborate
+    itself" (same location, same timestamp) and inflate its own count."""
+    first_id = _report(client, type="flood", latitude=-1.19, longitude=36.90, description="first")
+    first = next(r for r in client.get("/incidents").json() if r["id"] == first_id)
+    # base 0.35, no nearby reports yet - must not count itself
+    assert first["confidence_score"] == 0.35
+
+    second_id = _report(client, type="flood", latitude=-1.1901, longitude=36.9001, description="second, nearby")
+    feed = {r["id"]: r for r in client.get("/incidents").json()}
+    # each should now see exactly ONE nearby report (the other one), not two
+    # (which would happen if a report's own row weren't excluded)
+    assert feed[second_id]["confidence_score"] == 0.55  # 0.35 base + 0.20 (1 nearby report)
+
+
 def test_flood_report_inside_known_flood_zone_gets_ground_truth_bonus(client):
     import json
 
