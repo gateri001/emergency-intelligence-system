@@ -127,6 +127,40 @@ def test_broadcast_warns_when_source_was_officers_only(client, officer_token):
     assert res2.json()["reporter_safety_warning"] is None
 
 
+def test_report_ends_at_strategic_scoring_stage_after_background_refinement(client):
+    inc_id = _report(client, type="flood")
+    row = next(r for r in client.get("/incidents").json() if r["id"] == inc_id)
+    assert row["scoring_stage"] == "strategic"
+
+
+def test_recommended_alerts_excludes_reflex_only_rows_even_at_high_tier(client, officer_token):
+    from src.database import get_connection
+
+    # An officer report normally reaches scoring_stage='strategic' with a
+    # critical tier via the background task - simulate the row being stuck
+    # at reflex-only (e.g. strategic refinement hasn't run yet, or failed)
+    # to prove it can never masquerade as a real recommendation.
+    inc_id = _report(client, type="robbery")
+    conn = get_connection()
+    conn.execute(
+        "UPDATE incidents SET alert_tier = 'critical', confidence_score = 0.95, scoring_stage = 'reflex' WHERE id = ?",
+        (inc_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    recommended_ids = [r["id"] for r in client.get("/alert/recommended", headers=headers).json()]
+    assert inc_id not in recommended_ids
+
+    conn = get_connection()
+    conn.execute("UPDATE incidents SET scoring_stage = 'strategic' WHERE id = ?", (inc_id,))
+    conn.commit()
+    conn.close()
+    recommended_ids = [r["id"] for r in client.get("/alert/recommended", headers=headers).json()]
+    assert inc_id in recommended_ids
+
+
 def test_strategic_nearby_corroboration_excludes_the_reports_own_row(client):
     """Regression test for the reflex/strategic split: strategic refinement
     now runs AFTER insert, not before, so count_nearby_reports() must

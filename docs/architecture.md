@@ -42,6 +42,30 @@ Bulk imports (open data feeds)  ─┘                                │
    completes. No new infrastructure - Starlette's BackgroundTasks run
    in-process; if ingestion volume ever outgrows that, it's a clean seam to
    swap in a real task queue without touching the reflex layer.
+
+   Two follow-up fixes after the split, from real review, not assumption:
+   (1) profiled where the ~337ms strategic cost actually went before
+   deciding what to optimize - the O(n) table scan was 0.5ms, negligible
+   at real scale; `point_risk()` rebuilding a 10,000-cell national grid
+   just to read one cell back out was ~326ms, the actual bottleneck. Fixed
+   by evaluating the risk kernel directly at the query point instead of
+   building a grid at all (`risk_surface.point_risk()`, see its docstring
+   for how normalization is approximated without one) - ~326ms to ~34ms,
+   measured. (2) the reflex layer's instant tier is a provisional,
+   pre-corroboration guess, and it was being written to the same
+   `alert_tier` column `/alert/recommended` reads - meaning a citizen
+   report could momentarily look broadcast-worthy to an officer before any
+   corroboration happened at all. A `scoring_stage` column
+   ('reflex' | 'strategic' | 'failed') now tracks which layer last touched
+   a row; `/alert/recommended` only surfaces `scoring_stage='strategic'`
+   rows, so the reflex layer can influence the acknowledgment a reporter
+   sees but never independently assert "worth an officer's attention" -
+   that authority stays with the fully-refined assessment, matching the
+   false-alarm-fatigue constraint the tier system was built around in the
+   first place. This also closes a real failure mode: if the background
+   task raises, the row is marked `scoring_stage='failed'` and logged
+   rather than sitting at reflex-only values forever with no visibility
+   that anything went wrong.
 2. **Risk scoring** (`src/risk_surface.py`) — real incidents can happen
    anywhere, at any time, and several at once; there is no fixed list of
    "the areas that matter." So risk isn't a lookup against named places -

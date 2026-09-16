@@ -28,7 +28,8 @@ def init_db():
             has_evidence INTEGER NOT NULL DEFAULT 0,
             confidence_score REAL NOT NULL DEFAULT 0.0,
             corroboration_count INTEGER NOT NULL DEFAULT 0,
-            alert_tier TEXT NOT NULL DEFAULT 'in_app'
+            alert_tier TEXT NOT NULL DEFAULT 'in_app',
+            scoring_stage TEXT NOT NULL DEFAULT 'reflex' CHECK(scoring_stage IN ('reflex', 'strategic', 'failed'))
         )
     """)
     # Migration for databases created before visibility/confidence scoring
@@ -40,6 +41,7 @@ def init_db():
         "confidence_score REAL NOT NULL DEFAULT 0.0",
         "corroboration_count INTEGER NOT NULL DEFAULT 0",
         "alert_tier TEXT NOT NULL DEFAULT 'in_app'",
+        "scoring_stage TEXT NOT NULL DEFAULT 'reflex'",
     ):
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")

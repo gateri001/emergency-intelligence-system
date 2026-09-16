@@ -364,8 +364,11 @@ async function findNearestFacilities() {
 // -------------------------------------------------------------------
 let markers = [];
 function renderIncidentRow(inc) {
+  const severity = inc.predicted_severity || 'assessing…';
+  const stageBadge = inc.scoring_stage === 'reflex' ? ' <span class="badge">assessing</span>'
+    : inc.scoring_stage === 'failed' ? ' <span class="badge" style="color:var(--red)">assessment failed</span>' : '';
   return `<div class="incident-row">
-    ${inc.type} — ${inc.area || 'unnamed location'} — <span class="severity-${inc.predicted_severity}">${inc.predicted_severity}</span><br>
+    ${inc.type} — ${inc.area || 'unnamed location'} — <span class="severity-${inc.predicted_severity}">${severity}</span>${stageBadge}<br>
     <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${inc.alert_tier}">${inc.alert_tier.replace('_',' ')}</span> — via ${inc.source}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
     <button class="vote-btn" onclick="voteIncident(${inc.id}, true)">Confirm</button>
     <button class="vote-btn" onclick="voteIncident(${inc.id}, false)">Dispute</button>

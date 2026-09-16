@@ -102,6 +102,7 @@ class IncidentOut(BaseModel):
     confidence_score: float = 0.0
     corroboration_count: int = 0
     alert_tier: str = "in_app"
+    scoring_stage: str = "reflex"
 
 
 class VoteRequest(BaseModel):

@@ -131,15 +131,62 @@ def severity_bucket(risk_value: float) -> str:
     return "Low"
 
 
-def point_risk(lat: float, lon: float, incident_type: str | None = None):
+def _kernel_value_at(lat, lon, points, weighted, spatial_bandwidth_km):
+    """Raw (unnormalized) kernel sum at one point - the same per-cell math
+    build_risk_grid() runs, evaluated at a single coordinate instead of
+    every cell in a grid."""
+    dlat_km = (points[:, 0] - lat) * KM_PER_DEG_LAT
+    dlon_km = (points[:, 1] - lon) * KM_PER_DEG_LON
+    dist_km = np.sqrt(dlat_km ** 2 + dlon_km ** 2)
+    spatial_kernel = np.exp(-0.5 * (dist_km / spatial_bandwidth_km) ** 2)
+    return float(np.sum(weighted * spatial_kernel))
+
+
+def point_risk(lat: float, lon: float, incident_type: str | None = None,
+                half_life_days: float = 30.0, spatial_bandwidth_km: float = 6.0):
     """
     Risk at any (lat, lon) - not restricted to a fixed list of places. This
     is the single risk model the whole system uses now (prediction, incident
     scoring, and routing all read from the same surface).
+
+    Deliberately does NOT call build_risk_grid() - profiled against the
+    real dev database, building the full 100x100 national grid to read
+    back a single cell was the dominant cost of every report's scoring
+    pipeline (~326ms of ~337ms measured, see docs/architecture.md), 10,000
+    cells computed to answer a question about one point. This evaluates
+    the same kernel directly at the query point instead.
+
+    The one thing that required the full grid was normalization - risk is
+    scored relative to the current data's own maximum, not an absolute
+    probability (see build_risk_grid's docstring), and computing an exact
+    maximum needs to check somewhere. This approximates it by evaluating
+    the kernel at each historical point's own location instead of a full
+    grid - for a sum-of-kernels surface, the maximum sits at or very near
+    a point of high stacked density, which is exactly what a historical
+    point location is. That's O(n^2) in the number of historical points
+    rather than O(grid_cells x n) - cheaper at realistic near-term scale
+    (crosses over around n~10,000 points, well beyond where this project
+    is), and doesn't need a grid at all. Given the model was already
+    documented as relative/uncalibrated rather than an absolute
+    probability, this approximation doesn't change what the number means,
+    just how it's computed.
     """
     category = TYPE_CATEGORY.get(incident_type) if incident_type else None
-    grid, lat_centers, lon_centers = build_risk_grid(category=category)
-    i = int(np.argmin(np.abs(lat_centers - lat)))
-    j = int(np.argmin(np.abs(lon_centers - lon)))
-    value = float(grid[i, j])
+    points = _load_points(category)
+    if len(points) == 0:
+        return 0.0, severity_bucket(0.0)
+
+    decay_lambda = np.log(2) / half_life_days
+    recency_kernel = np.exp(-decay_lambda * points[:, 3])
+    weighted = points[:, 2] * recency_kernel
+
+    raw_value = _kernel_value_at(lat, lon, points, weighted, spatial_bandwidth_km)
+    max_value = max(
+        (_kernel_value_at(p[0], p[1], points, weighted, spatial_bandwidth_km) for p in points),
+        default=0.0,
+    )
+    if max_value <= 0:
+        return 0.0, severity_bucket(0.0)
+
+    value = min(raw_value / max_value, 1.0)
     return value, severity_bucket(value)

@@ -261,10 +261,22 @@ def list_recommended_alerts(officer: str = Depends(get_current_officer)):
     surfaced, not auto-fired: a mass SMS is still a human decision (see
     docs/architecture.md for why confidence-driven auto-broadcast was
     deliberately not built yet).
+
+    Deliberately requires scoring_stage='strategic': the reflex layer's
+    instant tier (src/reflex.py) is a provisional, pre-corroboration guess
+    - it's fine as an internal acknowledgment signal, but it shouldn't by
+    itself be able to assert "worth an officer's attention as broadcast-
+    worthy" to a human decision-maker. Only the fully-refined strategic
+    assessment earns a place on this list. In practice the gap between
+    reflex and strategic is small (milliseconds to a few hundred ms), so
+    this mostly excludes nothing - but it exists so a stuck/failed
+    strategic pass (scoring_stage='failed') can never silently masquerade
+    as a real recommendation either.
     """
     conn = get_connection()
     rows = conn.execute(
         "SELECT * FROM incidents WHERE alert_tier IN ('sms_recommended', 'critical') "
+        "AND scoring_stage = 'strategic' "
         "ORDER BY confidence_score DESC LIMIT 100"
     ).fetchall()
     conn.close()
