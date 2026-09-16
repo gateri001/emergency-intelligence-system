@@ -3,86 +3,193 @@
 <head>
 <title>Emergency Intelligence System</title>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 <style>
-  body { font-family: Arial, sans-serif; margin: 0; background: #0b0f19; color: #fff; }
-  header { background: #121a2f; padding: 15px; font-size: 20px; text-align: center; }
-  .status { text-align: center; padding: 6px; background: #065f46; font-size: 13px; }
-  .container { display: flex; }
-  #map { height: 620px; width: 68%; }
-  .sidebar { width: 32%; padding: 16px; background: #111827; box-sizing: border-box; }
-  h3 { margin-top: 0; }
-  input, select, button { width: 100%; margin-top: 8px; padding: 8px; box-sizing: border-box; }
-  button { background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer; padding: 10px; }
-  button:hover { background: #1d4ed8; }
-  .result { margin-top: 10px; padding: 8px; border-radius: 4px; background: #1f2937; font-size: 14px; min-height: 18px; }
-  .severity-High { color: #f87171; font-weight: bold; }
-  .severity-Medium { color: #fbbf24; font-weight: bold; }
-  .severity-Low { color: #34d399; font-weight: bold; }
-  .tier-critical { color: #f87171; font-weight: bold; }
-  .tier-sms_recommended { color: #fbbf24; font-weight: bold; }
-  .tier-in_app { color: #9ca3af; }
-  .incident-row { padding: 6px 0; border-bottom: 1px solid #374151; }
-  .vote-btn { width: auto; display: inline-block; padding: 3px 8px; margin: 4px 4px 0 0; font-size: 12px; }
+  :root {
+    --bg: #0b0f19; --panel: #111827; --panel2: #1a2333; --border: #263042;
+    --text: #e5e7eb; --muted: #9ca3af; --accent: #2563eb; --accent-hover: #1d4ed8;
+    --red: #f87171; --amber: #fbbf24; --green: #34d399;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+  header { background: var(--panel); padding: 14px 18px; display: flex; align-items: baseline; gap: 10px; border-bottom: 1px solid var(--border); }
+  header .brand { font-size: 19px; font-weight: 700; }
+  header .tagline { font-size: 12.5px; color: var(--muted); }
+  .app { display: flex; height: calc(100vh - 53px); }
+  #map { flex: 1 1 60%; min-width: 0; }
+  .panel { flex: 1 1 40%; max-width: 440px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border); }
+  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .tab { padding: 11px 14px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-content { flex: 1; overflow-y: auto; padding: 16px; display: none; }
+  .tab-content.active { display: block; }
+  h3 { margin: 0 0 8px; font-size: 15px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  label.field-label { display: block; font-size: 12.5px; color: var(--muted); margin-top: 10px; margin-bottom: 3px; }
+  input, select, textarea, button { width: 100%; padding: 9px; box-sizing: border-box; font-size: 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
+  button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; margin-top: 12px; }
+  button:hover { background: var(--accent-hover); }
+  button.secondary { background: var(--panel2); border: 1px solid var(--border); font-weight: 500; margin-top: 8px; }
+  button.secondary:hover { background: #232f45; }
+  .checkbox-row { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 13px; }
+  .checkbox-row input { width: auto; }
+  .result { margin-top: 10px; padding: 9px; border-radius: 6px; background: var(--panel2); font-size: 13.5px; min-height: 16px; border: 1px solid var(--border); }
+  .severity-High { color: var(--red); font-weight: bold; }
+  .severity-Medium { color: var(--amber); font-weight: bold; }
+  .severity-Low { color: var(--green); font-weight: bold; }
+  .tier-critical { color: var(--red); font-weight: bold; }
+  .tier-sms_recommended { color: var(--amber); font-weight: bold; }
+  .tier-in_app { color: var(--muted); }
+  .incident-row { padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+  .incident-row small { color: var(--muted); }
+  .vote-btn { width: auto; display: inline-block; padding: 4px 9px; margin: 6px 6px 0 0; font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); }
+  .selected-box { padding: 8px 9px; border-radius: 6px; background: var(--panel2); border: 1px solid var(--border); font-size: 13px; margin-bottom: 10px; }
+  .logged-in-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; }
+  .logged-in-bar button { width: auto; margin: 0; padding: 6px 10px; font-size: 12px; }
+  @media (max-width: 800px) {
+    .app { flex-direction: column; height: auto; }
+    #map { height: 42vh; flex: none; }
+    .panel { max-width: none; height: 58vh; }
+  }
 </style>
 </head>
 <body>
 
-<header>Emergency Intelligence System</header>
-<div class="status">Multi-hazard risk intelligence for Kenya — crime, flood, fire, medical</div>
+<header>
+  <span class="brand">Emergency Intelligence System</span>
+  <span class="tagline">Multi-hazard risk intelligence for Kenya — crime, flood, fire, medical</span>
+</header>
 
-<div class="container">
+<div class="app">
   <div id="map"></div>
 
-  <div class="sidebar">
-    <h3>Selected Location</h3>
-    <div class="result" id="selectedPoint">Click anywhere on the map to select a location — every action below works on any point, not a fixed list of areas.</div>
-    <button onclick="useMyLocation()">Use my current location instead</button>
+  <div class="panel">
+    <div class="tabs">
+      <div class="tab active" data-tab="report">Report</div>
+      <div class="tab" data-tab="risk">Risk Check</div>
+      <div class="tab" data-tab="route">Safe Route</div>
+      <div class="tab" data-tab="feed">Live Feed</div>
+      <div class="tab" data-tab="data">Open Data</div>
+      <div class="tab" data-tab="officer">Officer</div>
+    </div>
 
-    <h3>Report an Incident</h3>
-    <select id="type">
-      <option value="robbery">Robbery</option>
-      <option value="burglary">Burglary</option>
-      <option value="assault">Assault</option>
-      <option value="flood">Flood</option>
-      <option value="fire">Fire</option>
-      <option value="medical_emergency">Medical Emergency</option>
-      <option value="accident">Accident</option>
-    </select>
-    <input id="description" placeholder="Brief description (optional)" />
-    <select id="visibility">
-      <option value="public">Visible to everyone nearby</option>
-      <option value="officers_only">Officers only (for your safety — e.g. reporting a crime in progress)</option>
-    </select>
-    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;">
-      <input type="checkbox" id="hasEvidence" style="width:auto;margin:0;" /> I have a photo/video of this
-    </label>
-    <button onclick="reportIncident()">Submit Report at Selected Location</button>
-    <div class="result" id="reportResult"></div>
+    <!-- REPORT -->
+    <div class="tab-content active" id="tab-report">
+      <h3>Report an Incident</h3>
+      <div class="hint">Click anywhere on the map to set the location, or use your current position. Works at any point — not a fixed list of areas.</div>
+      <div class="selected-box" id="selectedPoint">No location selected yet.</div>
+      <button class="secondary" onclick="useMyLocation()">Use my current location</button>
 
-    <h3>Risk Prediction</h3>
-    <select id="predictType">
-      <option value="robbery">Robbery</option>
-      <option value="burglary">Burglary</option>
-      <option value="theft">Theft</option>
-      <option value="flood">Flood</option>
-      <option value="fire">Fire</option>
-    </select>
-    <button onclick="predictRisk()">Check Risk at Selected Location</button>
-    <div class="result" id="predictionResult"></div>
+      <label class="field-label">Type</label>
+      <select id="type">
+        <option value="robbery">Robbery</option>
+        <option value="burglary">Burglary</option>
+        <option value="assault">Assault</option>
+        <option value="vandalism">Vandalism</option>
+        <option value="suspicious_activity">Suspicious activity</option>
+        <option value="flood">Flood</option>
+        <option value="fire">Fire</option>
+        <option value="medical_emergency">Medical emergency</option>
+        <option value="accident">Accident</option>
+      </select>
 
-    <h3>Find a Safe Route</h3>
-    <button onclick="requestRoute(selected.lat, selected.lon)">Route From Selected Location</button>
-    <div class="result" id="routeResult"></div>
+      <label class="field-label">Description (optional)</label>
+      <input id="description" placeholder="What's happening?" />
 
-    <h3>Recent Incidents</h3>
-    <div class="result" id="recentList">Loading…</div>
+      <label class="field-label">Who should see this?</label>
+      <select id="visibility">
+        <option value="public">Visible to everyone nearby</option>
+        <option value="officers_only">Officers only — for your safety (e.g. a crime in progress)</option>
+      </select>
 
-    <h3>Verified Events (GDACS)</h3>
-    <div class="result" id="externalEvents">Loading…</div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="hasEvidence" /> I have a photo/video of this
+      </div>
 
-    <h3>Verified Flood Damage (UNOSAT)</h3>
-    <div class="result" id="structuresSummary">Loading…</div>
+      <button onclick="reportIncident()">Submit Report</button>
+      <div class="result" id="reportResult"></div>
+    </div>
+
+    <!-- RISK CHECK -->
+    <div class="tab-content" id="tab-risk">
+      <h3>Risk Prediction</h3>
+      <div class="hint">Check the modeled risk of a given incident type at the selected location.</div>
+      <div class="selected-box" id="selectedPointRisk">No location selected yet.</div>
+      <label class="field-label">Incident type</label>
+      <select id="predictType">
+        <option value="robbery">Robbery</option>
+        <option value="burglary">Burglary</option>
+        <option value="theft">Theft</option>
+        <option value="flood">Flood</option>
+        <option value="fire">Fire</option>
+        <option value="medical_emergency">Medical emergency</option>
+      </select>
+      <button onclick="predictRisk()">Check Risk</button>
+      <div class="result" id="predictionResult"></div>
+    </div>
+
+    <!-- SAFE ROUTE -->
+    <div class="tab-content" id="tab-route">
+      <h3>Find a Safe Route</h3>
+      <div class="hint">Routes from the selected location to the nearest genuinely lower-risk area nearby.</div>
+      <div class="selected-box" id="selectedPointRoute">No location selected yet.</div>
+      <button onclick="requestRoute()">Find Safe Route</button>
+      <div class="result" id="routeResult"></div>
+    </div>
+
+    <!-- LIVE FEED -->
+    <div class="tab-content" id="tab-feed">
+      <h3>Recent Incidents</h3>
+      <div class="hint">Public feed — reports marked "officers only" by their reporter are not shown here.</div>
+      <div class="result" id="recentList">Loading…</div>
+    </div>
+
+    <!-- OPEN DATA -->
+    <div class="tab-content" id="tab-data">
+      <h3>Verified Events (GDACS)</h3>
+      <div class="result" id="externalEvents">Loading…</div>
+      <h3 style="margin-top:16px;">Verified Flood Damage (UNOSAT)</h3>
+      <div class="result" id="structuresSummary">Loading…</div>
+    </div>
+
+    <!-- OFFICER -->
+    <div class="tab-content" id="tab-officer">
+      <div id="officerLoggedOut">
+        <h3>Officer Login</h3>
+        <label class="field-label">Username</label>
+        <input id="officerUsername" />
+        <label class="field-label">Password</label>
+        <input id="officerPassword" type="password" />
+        <button onclick="officerLogin()">Log In</button>
+        <div class="result" id="officerLoginResult"></div>
+      </div>
+
+      <div id="officerLoggedIn" style="display:none;">
+        <div class="logged-in-bar">
+          <span>Logged in as <strong id="officerName"></strong></span>
+          <button class="secondary" onclick="officerLogout()">Log out</button>
+        </div>
+
+        <h3>Recommended Alerts <span class="badge">confidence-driven</span></h3>
+        <div class="hint">Incidents that have crossed the SMS/critical confidence threshold. Sending SMS is still your call, not automatic.</div>
+        <div class="result" id="recommendedList">Loading…</div>
+
+        <h3 style="margin-top:16px;">Trigger a Broadcast</h3>
+        <label class="field-label">Incident ID</label>
+        <input id="broadcastIncidentId" type="number" />
+        <label class="field-label">Message</label>
+        <input id="broadcastMessage" maxlength="300" />
+        <label class="field-label">Radius (km)</label>
+        <input id="broadcastRadius" type="number" value="5" />
+        <button onclick="triggerBroadcast()">Send Broadcast</button>
+        <div class="result" id="broadcastResult"></div>
+
+        <h3 style="margin-top:16px;">All Incidents (incl. officers-only)</h3>
+        <div class="result" id="allIncidentsList">Loading…</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -98,15 +205,30 @@ function nowTimestamp() {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Single source of truth for "where on the map are we acting" - every
-// action (report, predict, route) reads from this. No fixed area list;
-// any point you click or your real location works the same way.
+// -------------------------------------------------------------------
+// Tabs
+// -------------------------------------------------------------------
+document.querySelectorAll('.tab').forEach(tabEl => {
+  tabEl.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    tabEl.classList.add('active');
+    document.getElementById(`tab-${tabEl.dataset.tab}`).classList.add('active');
+  });
+});
+
+// -------------------------------------------------------------------
+// Selected location - single source of truth for report/risk/route
+// -------------------------------------------------------------------
 let selected = null;
 let selectedMarker = null;
 
 function setSelected(lat, lon) {
   selected = { lat, lon };
-  document.getElementById('selectedPoint').innerText = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  ['selectedPoint', 'selectedPointRisk', 'selectedPointRoute'].forEach(id => {
+    document.getElementById(id).innerText = label;
+  });
   if (selectedMarker) map.removeLayer(selectedMarker);
   selectedMarker = L.marker([lat, lon]).addTo(map);
 }
@@ -119,7 +241,7 @@ function useMyLocation() {
     return;
   }
   navigator.geolocation.getCurrentPosition(
-    (pos) => setSelected(pos.coords.latitude, pos.coords.longitude),
+    (pos) => { setSelected(pos.coords.latitude, pos.coords.longitude); map.setView([pos.coords.latitude, pos.coords.longitude], 14); },
     () => { document.getElementById('selectedPoint').innerText = 'Could not get your location — click the map instead.'; }
   );
 }
@@ -132,6 +254,9 @@ function requireSelected(resultElId) {
   return true;
 }
 
+// -------------------------------------------------------------------
+// Report
+// -------------------------------------------------------------------
 async function reportIncident() {
   if (!requireSelected('reportResult')) return;
   const body = {
@@ -149,9 +274,12 @@ async function reportIncident() {
   const data = await res.json();
   document.getElementById('reportResult').innerText =
     res.ok ? `Reported (incident #${data.incident_id})` : (data.detail || 'Error submitting report');
-  loadRecent();
+  if (res.ok) loadRecent();
 }
 
+// -------------------------------------------------------------------
+// Risk prediction
+// -------------------------------------------------------------------
 async function predictRisk() {
   if (!requireSelected('predictionResult')) return;
   const body = {
@@ -164,59 +292,27 @@ async function predictRisk() {
   });
   const data = await res.json();
   const el = document.getElementById('predictionResult');
-  if (res.ok) {
-    el.innerHTML = `Predicted risk: <span class="severity-${data.predicted_severity}">${data.predicted_severity}</span> (score ${data.risk_score})`;
-  } else {
-    el.innerText = data.detail || 'Error getting prediction';
-  }
+  el.innerHTML = res.ok
+    ? `Predicted risk: <span class="severity-${data.predicted_severity}">${data.predicted_severity}</span> (score ${data.risk_score})`
+    : (data.detail || 'Error getting prediction');
 }
 
-let markers = [];
-async function loadRecent() {
-  const res = await fetch(`${API}/incidents?limit=50`);
-  const data = await res.json();
-  markers.forEach(m => map.removeLayer(m));
-  markers = [];
-  const list = document.getElementById('recentList');
-  list.innerHTML = data.length ? '' : 'No incidents yet.';
-  data.forEach(inc => {
-    list.innerHTML += `<div class="incident-row">
-      ${inc.type} — ${inc.area} — <span class="severity-${inc.predicted_severity}">${inc.predicted_severity}</span><br>
-      <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${inc.alert_tier}">${inc.alert_tier.replace('_',' ')}</span></small><br>
-      <button class="vote-btn" onclick="voteIncident(${inc.id}, true)">✓ Confirm</button>
-      <button class="vote-btn" onclick="voteIncident(${inc.id}, false)">✗ Dispute</button>
-    </div>`;
-    if (inc.latitude && inc.longitude) {
-      const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color: '#f87171' })
-        .addTo(map).bindPopup(`${inc.type} in ${inc.area} (${inc.predicted_severity}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
-      markers.push(m);
-    }
-  });
-}
-
-async function voteIncident(id, confirm) {
-  await fetch(`${API}/report/${id}/vote`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ confirm })
-  });
-  loadRecent();
-}
-
+// -------------------------------------------------------------------
+// Safe route
+// -------------------------------------------------------------------
 let routeLayer = null;
 let routeMarkers = [];
 
-async function requestRoute(lat, lon) {
+async function requestRoute() {
   const resultEl = document.getElementById('routeResult');
-  if (!lat || !lon) { resultEl.innerText = 'Select a location on the map first.'; return; }
+  if (!requireSelected('routeResult')) return;
   resultEl.innerText = 'Finding safest route…';
   const res = await fetch(`${API}/route/safe`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ latitude: lat, longitude: lon })
+    body: JSON.stringify({ latitude: selected.lat, longitude: selected.lon })
   });
   const data = await res.json();
-  if (!res.ok) {
-    resultEl.innerText = data.detail || 'No safe route found from this location.';
-    return;
-  }
+  if (!res.ok) { resultEl.innerText = data.detail || 'No safe route found from this location.'; return; }
 
   if (routeLayer) map.removeLayer(routeLayer);
   routeMarkers.forEach(m => map.removeLayer(m));
@@ -224,7 +320,6 @@ async function requestRoute(lat, lon) {
 
   const latlngs = data.waypoints.map(w => [w.lat, w.lon]);
   routeLayer = L.polyline(latlngs, { color: '#34d399', weight: 5 }).addTo(map);
-
   const startMarker = L.circleMarker([data.start.lat, data.start.lon], { radius: 8, color: '#f87171' })
     .addTo(map).bindPopup(`You are here (risk ${data.start.risk})`).openPopup();
   const safeMarker = L.circleMarker([data.safe_zone.lat, data.safe_zone.lon], { radius: 8, color: '#34d399' })
@@ -235,6 +330,46 @@ async function requestRoute(lat, lon) {
   resultEl.innerText = `Safe zone ${data.distance_km} km away — risk dropped from ${data.start.risk} to ${data.safe_zone.risk}.`;
 }
 
+// -------------------------------------------------------------------
+// Live feed
+// -------------------------------------------------------------------
+let markers = [];
+function renderIncidentRow(inc) {
+  return `<div class="incident-row">
+    ${inc.type} — ${inc.area || 'unnamed location'} — <span class="severity-${inc.predicted_severity}">${inc.predicted_severity}</span><br>
+    <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${inc.alert_tier}">${inc.alert_tier.replace('_',' ')}</span> — via ${inc.source}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
+    <button class="vote-btn" onclick="voteIncident(${inc.id}, true)">Confirm</button>
+    <button class="vote-btn" onclick="voteIncident(${inc.id}, false)">Dispute</button>
+  </div>`;
+}
+
+async function loadRecent() {
+  const res = await fetch(`${API}/incidents?limit=50`);
+  const data = await res.json();
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  const list = document.getElementById('recentList');
+  list.innerHTML = data.length ? data.map(renderIncidentRow).join('') : 'No incidents yet.';
+  data.forEach(inc => {
+    if (inc.latitude && inc.longitude) {
+      const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color: '#f87171' })
+        .addTo(map).bindPopup(`${inc.type} (${inc.predicted_severity}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
+      markers.push(m);
+    }
+  });
+}
+
+async function voteIncident(id, confirm) {
+  await fetch(`${API}/report/${id}/vote`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ confirm })
+  });
+  loadRecent();
+  if (officerToken) loadAllIncidents();
+}
+
+// -------------------------------------------------------------------
+// Open data (GDACS / UNOSAT)
+// -------------------------------------------------------------------
 async function loadExternalEvents() {
   const res = await fetch(`${API}/events/external`);
   const data = await res.json();
@@ -242,16 +377,15 @@ async function loadExternalEvents() {
   if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_gdacs.py'; return; }
   el.innerHTML = data.map(e =>
     `<div>${e.event_type} — ${e.name} <br><small>${e.from_date?.slice(0,10)} → ${e.to_date?.slice(0,10)} (${e.alert_level})</small></div>`
-  ).join('<hr style="border-color:#374151">');
+  ).join('<hr style="border-color:var(--border)">');
 }
 
 async function loadFloodExtents() {
   const res = await fetch(`${API}/events/flood-extents`);
   const data = await res.json();
   data.forEach(fe => {
-    L.geoJSON(fe.geometry, {
-      style: { color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.35 }
-    }).addTo(map).bindPopup(`Satellite-mapped flood extent — ${fe.region}, ${fe.source_date} (UNOSAT)`);
+    L.geoJSON(fe.geometry, { style: { color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.35 } })
+      .addTo(map).bindPopup(`Satellite-mapped flood extent — ${fe.region}, ${fe.source_date} (UNOSAT)`);
   });
 }
 
@@ -263,6 +397,88 @@ async function loadStructuresSummary() {
   el.innerHTML = data.map(d => `<div>${d.area}: ${d.structure_count} structures affected</div>`).join('');
 }
 
+// -------------------------------------------------------------------
+// Officer
+// -------------------------------------------------------------------
+let officerToken = sessionStorage.getItem('officerToken') || null;
+let officerUser = sessionStorage.getItem('officerUser') || null;
+
+function officerHeaders() { return { 'Authorization': `Bearer ${officerToken}` }; }
+
+function refreshOfficerView() {
+  const loggedOut = document.getElementById('officerLoggedOut');
+  const loggedIn = document.getElementById('officerLoggedIn');
+  if (officerToken) {
+    loggedOut.style.display = 'none';
+    loggedIn.style.display = 'block';
+    document.getElementById('officerName').innerText = officerUser || '';
+    loadRecommended();
+    loadAllIncidents();
+  } else {
+    loggedOut.style.display = 'block';
+    loggedIn.style.display = 'none';
+  }
+}
+
+async function officerLogin() {
+  const username = document.getElementById('officerUsername').value;
+  const password = document.getElementById('officerPassword').value;
+  const form = new URLSearchParams();
+  form.set('username', username);
+  form.set('password', password);
+  const res = await fetch(`${API}/token`, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: form });
+  const data = await res.json();
+  if (!res.ok) { document.getElementById('officerLoginResult').innerText = data.detail || 'Login failed'; return; }
+  officerToken = data.access_token;
+  officerUser = username;
+  sessionStorage.setItem('officerToken', officerToken);
+  sessionStorage.setItem('officerUser', officerUser);
+  document.getElementById('officerLoginResult').innerText = '';
+  refreshOfficerView();
+}
+
+function officerLogout() {
+  officerToken = null; officerUser = null;
+  sessionStorage.removeItem('officerToken'); sessionStorage.removeItem('officerUser');
+  refreshOfficerView();
+}
+
+async function loadRecommended() {
+  const res = await fetch(`${API}/alert/recommended`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const data = await res.json();
+  const el = document.getElementById('recommendedList');
+  el.innerHTML = data.length ? data.map(renderIncidentRow).join('') : 'Nothing above the SMS/critical confidence threshold right now.';
+}
+
+async function loadAllIncidents() {
+  const res = await fetch(`${API}/incidents/all?limit=50`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const data = await res.json();
+  const el = document.getElementById('allIncidentsList');
+  el.innerHTML = data.length ? data.map(inc => `<div class="incident-row">#${inc.id} ${renderIncidentRow(inc)}</div>`).join('') : 'No incidents yet.';
+}
+
+async function triggerBroadcast() {
+  const body = {
+    incident_id: parseInt(document.getElementById('broadcastIncidentId').value, 10),
+    message: document.getElementById('broadcastMessage').value,
+    radius_km: parseFloat(document.getElementById('broadcastRadius').value) || 5
+  };
+  const res = await fetch(`${API}/alert/broadcast`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  document.getElementById('broadcastResult').innerText = res.ok
+    ? `Sent to ${data.recipients_reached} subscriber(s) within ${data.radius_km}km.`
+    : (data.detail || 'Broadcast failed');
+}
+
+refreshOfficerView();
+
+// -------------------------------------------------------------------
+// Init
+// -------------------------------------------------------------------
 loadRecent();
 loadExternalEvents();
 loadFloodExtents();

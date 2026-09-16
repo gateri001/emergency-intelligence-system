@@ -93,11 +93,22 @@ def alert_tier(confidence: float, incident_type: str) -> str:
 
 
 def count_nearby_reports(conn, latitude: float, longitude: float, incident_type: str, timestamp: str,
-                          radius_km: float = NEARBY_RADIUS_KM, window_hours: float = NEARBY_WINDOW_HOURS) -> int:
+                          radius_km: float = NEARBY_RADIUS_KM, window_hours: float = NEARBY_WINDOW_HOURS,
+                          exclude_source: str | None = None) -> int:
     """Independent reports of the same type, close in space and time - the
     corroboration signal used at report-creation time. Distance is computed
     in Python (haversine) rather than SQL since sqlite has no geo functions;
-    the incidents table is small enough for this MVP scale."""
+    the incidents table is small enough for this MVP scale.
+
+    `exclude_source`: a single real fire lights up several adjacent pixels
+    in one satellite pass - those aren't independent corroboration the way
+    two different people separately reporting the same fire would be, just
+    spatial resolution of one detection. Bulk/sensor ingestion should pass
+    its own source here so it only gets a corroboration bonus from a
+    genuinely different source (a citizen or officer report), not from
+    counting itself several times over. Citizen/officer reports don't need
+    this - two different citizens reporting the same fire IS real
+    corroboration even though they share a source type."""
     from src.geo import haversine_km
 
     try:
@@ -107,8 +118,9 @@ def count_nearby_reports(conn, latitude: float, longitude: float, incident_type:
 
     rows = conn.execute(
         "SELECT latitude, longitude, timestamp FROM incidents "
-        "WHERE type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL",
-        (incident_type,),
+        "WHERE type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL"
+        + (" AND source != ?" if exclude_source else ""),
+        (incident_type, exclude_source) if exclude_source else (incident_type,),
     ).fetchall()
 
     count = 0

@@ -30,6 +30,7 @@ import shapefile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.confidence import alert_tier, compute_initial_confidence, count_nearby_reports
 from src.database import get_connection, init_db
 from src.risk_surface import build_risk_grid, severity_bucket
 
@@ -48,6 +49,17 @@ MIN_FRP = 10.0  # megawatts - see module docstring
 def main():
     init_db()
     conn = get_connection()
+
+    # FIRMS gives a rolling 24h snapshot, not a historical archive - running
+    # this again with yesterday's fires still in the table would double-count
+    # them and pollute the risk surface with stale "fire happened here" signal
+    # long after it stopped being true. Bulk/FIRMS rows are a live snapshot,
+    # replaced on every run; citizen/officer reports are a persistent log and
+    # are untouched by this (this only deletes source='bulk' AND type='fire').
+    deleted = conn.execute("DELETE FROM incidents WHERE source = 'bulk' AND type = 'fire'").rowcount
+    conn.commit()
+    if deleted:
+        print(f"Cleared {deleted} fire detections from the previous run before re-ingesting.")
 
     print(f"Downloading {FIRMS_24H_SHP_URL} ...")
     resp = requests.get(FIRMS_24H_SHP_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
@@ -85,10 +97,25 @@ def main():
         timestamp = f"{acq_date} {acq_time[:2]}:{acq_time[2:]}"
 
         description = f"NASA FIRMS VIIRS detection, FRP={rec['FRP']} MW, confidence={rec['CONFIDENCE']}"
+
+        # Same confidence/tier logic every other incident goes through
+        # (src/confidence.py) - a bulk sensor detection starts trusted (0.8
+        # base, no corroboration needed), and gets a further bump if it's
+        # part of a cluster of nearby detections (a real, larger fire lights
+        # up multiple VIIRS pixels; an isolated one might just be a small
+        # burn). Without this, FIRMS fires silently never reached
+        # /alert/recommended no matter how severe - see the comment at the
+        # top of this function's caller.
+        nearby = count_nearby_reports(conn, lat, lon, "fire", timestamp, exclude_source="bulk")
+        confidence = compute_initial_confidence("bulk", "fire", False, nearby)
+        tier = alert_tier(confidence, "fire")
+
         conn.execute(
-            """INSERT INTO incidents (source, type, area, latitude, longitude, description,
-               predicted_severity, timestamp) VALUES (?, 'fire', '', ?, ?, ?, ?, ?)""",
-            ("bulk", lat, lon, description, score(lat, lon), timestamp),
+            """INSERT INTO incidents
+               (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
+                visibility, has_evidence, confidence_score, corroboration_count, alert_tier)
+               VALUES (?, 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?)""",
+            ("bulk", lat, lon, description, score(lat, lon), timestamp, confidence, tier),
         )
         inserted += 1
 

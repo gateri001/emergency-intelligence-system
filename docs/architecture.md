@@ -137,6 +137,26 @@ then gets a bonus for independent nearby reports of the same type within a
 the crowd-corroboration mechanism, and it's anonymous by the same design
 choice as reporting itself.
 
+**Fire pipeline specifics**: `scripts/ingest_firms.py` now runs every
+detection through this same confidence/tier logic (it previously bypassed
+it entirely, so a real satellite-confirmed fire could never reach
+`/alert/recommended` no matter how severe - fixed). Two things worth
+knowing: (1) each FIRMS run treats the incidents table as a fresh 24h
+snapshot for `source='bulk' AND type='fire'` rows only, deleting the
+previous run's before inserting - FIRMS data is rolling, not historical,
+so keeping old detections around would pollute the risk surface with
+stale "fire happened here" signal; citizen/officer reports are untouched
+by this. (2) `count_nearby_reports()` takes an `exclude_source` param used
+here to stop adjacent VIIRS pixels from the same fire (a real fire lights
+up several nearby sensor pixels in one pass) from counting as independent
+corroboration against each other - only a citizen/officer report nearby
+adds a corroboration bonus to a bulk detection. Known limitation, not yet
+solved: every FIRMS detection that survives the significance filter lands
+in `critical` tier, since sensor confidence (0.8) exceeds the hazard
+critical threshold (0.6) regardless of the fire's actual scale - FRP
+(radiative power, already present in the raw data) could differentiate a
+borderline 10MW detection from a 200MW blaze, but isn't used for that yet.
+
 **Alert tiers** (`alert_tier()`): `in_app` -> `sms_recommended` -> `critical`,
 at category-specific thresholds (hazard/medical cross into `sms_recommended`
 at 30% confidence and `critical` at 60%, matching the original design
