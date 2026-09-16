@@ -157,6 +157,31 @@ critical threshold (0.6) regardless of the fire's actual scale - FRP
 (radiative power, already present in the raw data) could differentiate a
 borderline 10MW detection from a 200MW blaze, but isn't used for that yet.
 
+**Crime pipeline specifics**: auditing this against the actual scenario it
+was built for (a witness reporting a crime in progress, needing to reach
+officers without exposing themselves) found a real vulnerability: the vote
+endpoint (`POST /report/{id}/vote`) fetched by bare incident ID with no
+visibility check and returned the full record regardless - since IDs are
+small sequential integers, that made `officers_only` trivially bypassable
+by enumeration. Fixed: the endpoint now treats an `officers_only` incident
+exactly like a nonexistent one (404, not 403 - a 403 would itself confirm
+something restricted exists at that ID).
+
+This also forced an answer to a question left open during design: does
+`officers_only` permanently cap how public a report can go, or just delay
+it? `/alert/broadcast` doesn't check `visibility` at all, so the answer
+that fell out of the build is "delay, not cap" - an officer can still
+manually broadcast about a formerly-hidden report once they've had time to
+act. That's the right answer (a real, confirmed danger shouldn't stay
+silent forever just because it started officers_only), but it leaves one
+gap code can't close: the broadcast message is free text an officer
+writes, and over-describing the original report (exact time, vantage
+point, distinctive detail) could still let someone work out who the
+original witness was, even without naming them. `/alert/broadcast` now
+returns a `reporter_safety_warning` when the source incident was
+`officers_only`, surfaced in the dashboard - advisory, not enforced,
+because free text can't be safety-checked by code.
+
 **Medical pipeline specifics**: unlike fire, there's no equivalent of FIRMS
 for medical emergencies - no public sensor feed detects "someone collapsed
 here." The report -> confidence -> corroboration -> tier flow is otherwise

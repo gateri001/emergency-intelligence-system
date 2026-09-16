@@ -498,9 +498,13 @@ async function triggerBroadcast() {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify(body)
   });
   const data = await res.json();
-  document.getElementById('broadcastResult').innerText = res.ok
-    ? `Sent to ${data.recipients_reached} subscriber(s) within ${data.radius_km}km.`
-    : (data.detail || 'Broadcast failed');
+  const el = document.getElementById('broadcastResult');
+  if (!res.ok) { el.innerText = data.detail || 'Broadcast failed'; return; }
+  let msg = `Sent to ${data.recipients_reached} subscriber(s) within ${data.radius_km}km.`;
+  if (data.reporter_safety_warning) {
+    msg += `<br><br><span style="color:var(--amber)">${data.reporter_safety_warning}</span>`;
+  }
+  el.innerHTML = msg;
 }
 
 refreshOfficerView();

@@ -21,6 +21,16 @@ def test_officers_only_report_excluded_from_public_feed(client):
     assert feed[0]["visibility"] == "public"
 
 
+def test_vote_endpoint_cannot_leak_officers_only_report(client):
+    inc_id = _report(client, visibility="officers_only", type="robbery",
+                      description="witness at risk, must not leak via vote")
+
+    res = client.post(f"/report/{inc_id}/vote", json={"confirm": True})
+    assert res.status_code == 404
+    assert "witness at risk" not in res.text
+    assert res.json() == {"detail": "Incident not found"}
+
+
 def test_officer_feed_includes_officers_only_reports(client, officer_token):
     _report(client, visibility="officers_only", description="witnessed crime")
 
@@ -93,6 +103,28 @@ def test_citizen_report_endpoint_is_rate_limited(client):
 def test_login_rejects_bad_credentials(client, officer_token):
     res = client.post("/token", data={"username": "test_officer", "password": "wrong"})
     assert res.status_code == 400
+
+
+def test_broadcast_warns_when_source_was_officers_only(client, officer_token):
+    inc_id = _report(client, visibility="officers_only", type="robbery")
+    headers = {"Authorization": f"Bearer {officer_token}"}
+
+    res = client.post(
+        "/alert/broadcast",
+        json={"incident_id": inc_id, "message": "Stay alert in the area.", "radius_km": 5},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    assert "officers_only" in res.json()["reporter_safety_warning"]
+
+    public_id = _report(client, visibility="public", type="robbery", latitude=-1.3, longitude=36.9)
+    res2 = client.post(
+        "/alert/broadcast",
+        json={"incident_id": public_id, "message": "Stay alert in the area.", "radius_km": 5},
+        headers=headers,
+    )
+    assert res2.status_code == 200
+    assert res2.json()["reporter_safety_warning"] is None
 
 
 def test_nearest_facilities_sorted_by_distance(client):

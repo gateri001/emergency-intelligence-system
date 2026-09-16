@@ -84,6 +84,7 @@ class BroadcastResponse(BaseModel):
     recipients_reached: int
     radius_km: float
     message: str
+    reporter_safety_warning: str | None = None
 
 
 class IncidentOut(BaseModel):

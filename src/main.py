@@ -174,16 +174,26 @@ def report_bulk(request: BulkReportRequest, officer: str = Depends(get_current_o
 @limiter.limit("20/minute")
 def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
     """
-    Crowd corroboration: anyone can confirm or dispute an existing report.
-    This is the mechanism that raises (or lowers) confidence after the
-    initial report - a report doesn't just sit at its starting score, it
-    moves as real people weigh in. No identity is collected here either, by
-    the same reasoning as reports themselves - voting shouldn't expose who
-    voted any more than reporting exposes who reported.
+    Crowd corroboration: anyone can confirm or dispute an existing PUBLIC
+    report. This is the mechanism that raises (or lowers) confidence after
+    the initial report - a report doesn't just sit at its starting score,
+    it moves as real people weigh in. No identity is collected here either,
+    by the same reasoning as reports themselves - voting shouldn't expose
+    who voted any more than reporting exposes who reported.
+
+    officers_only reports are excluded entirely, not just filtered from the
+    response - this endpoint used to fetch by bare incident_id with no
+    visibility check, and returned the full record either way. Since
+    incident IDs are small sequential integers, that made visibility
+    scoping trivially bypassable: enumerate IDs, call vote, read back the
+    exact lat/lon and description of a report a witness deliberately kept
+    off the public feed to stay safe. Fixed by treating an officers_only
+    incident exactly like a nonexistent one here (404, not 403) - a 403
+    would itself confirm something restricted exists at that ID.
     """
     conn = get_connection()
     row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
-    if row is None:
+    if row is None or row["visibility"] == "officers_only":
         conn.close()
         raise HTTPException(status_code=404, detail="Incident not found")
 
@@ -274,6 +284,18 @@ def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_curr
     needs a human decision behind it, not an automatic trigger off a
     severity score. Geo-targets every subscriber within radius_km of the
     incident and sends through whatever BroadcastProvider is configured.
+
+    visibility='officers_only' does NOT block a broadcast here - that's a
+    deliberate answer to a question that was left open during design: does
+    a reporter choosing officers_only permanently cap how public a report
+    can go, or just delay it until an officer has had time to act? This
+    says delay, not cap - officers_only exists to protect a witness in the
+    window before responders can act, not to silence a real, confirmed
+    danger forever. What it can't do is protect against the officer's own
+    broadcast message re-exposing the original reporter through over-
+    specific detail (exact time/vantage point, distinctive circumstances) -
+    that's not something code can enforce on free text, so it's surfaced as
+    a warning instead.
     """
     conn = get_connection()
     incident = conn.execute(
@@ -309,11 +331,21 @@ def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_curr
     broadcast_id = cursor.lastrowid
     conn.close()
 
+    warning = None
+    if incident["visibility"] == "officers_only":
+        warning = (
+            "This report was originally officers_only - the reporter chose that "
+            "to stay safe. Make sure your broadcast message doesn't include "
+            "enough specific detail (exact time, vantage point, distinctive "
+            "circumstances) to let someone work out who reported it."
+        )
+
     return BroadcastResponse(
         broadcast_id=broadcast_id,
         recipients_reached=len(targets),
         radius_km=request.radius_km,
         message=request.message,
+        reporter_safety_warning=warning,
     )
 
 
