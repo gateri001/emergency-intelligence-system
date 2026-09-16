@@ -137,6 +137,11 @@
       <div class="selected-box" id="selectedPointRoute">No location selected yet.</div>
       <button onclick="requestRoute()">Find Safe Route</button>
       <div class="result" id="routeResult"></div>
+
+      <h3 style="margin-top:16px;">Nearest Medical Help</h3>
+      <div class="hint">For a medical emergency, the useful question isn't "avoid danger" — it's "get to real help." Real hospital/clinic data (healthsites.io).</div>
+      <button class="secondary" onclick="findNearestFacilities()">Find Nearest Health Facilities</button>
+      <div class="result" id="facilitiesResult"></div>
     </div>
 
     <!-- LIVE FEED -->
@@ -328,6 +333,30 @@ async function requestRoute() {
 
   map.fitBounds(routeLayer.getBounds(), { padding: [40, 40] });
   resultEl.innerText = `Safe zone ${data.distance_km} km away — risk dropped from ${data.start.risk} to ${data.safe_zone.risk}.`;
+}
+
+// -------------------------------------------------------------------
+// Nearest health facilities
+// -------------------------------------------------------------------
+let facilityMarkers = [];
+
+async function findNearestFacilities() {
+  const resultEl = document.getElementById('facilitiesResult');
+  if (!requireSelected('facilitiesResult')) return;
+  resultEl.innerText = 'Searching…';
+  const res = await fetch(`${API}/facilities/nearest?latitude=${selected.lat}&longitude=${selected.lon}&limit=5`);
+  const data = await res.json();
+  facilityMarkers.forEach(m => map.removeLayer(m));
+  facilityMarkers = [];
+  if (!data.length) { resultEl.innerText = 'No known health facilities nearby.'; return; }
+  resultEl.innerHTML = data.map(f =>
+    `<div class="incident-row">${f.name} <span class="badge">${f.amenity}</span><br><small>${f.distance_km} km away${f.has_emergency==='yes' ? ' — emergency services' : ''}</small></div>`
+  ).join('');
+  data.forEach(f => {
+    const m = L.circleMarker([f.latitude, f.longitude], { radius: 7, color: '#38bdf8', fillColor: '#38bdf8', fillOpacity: 0.8 })
+      .addTo(map).bindPopup(`${f.name} (${f.amenity}) — ${f.distance_km} km`);
+    facilityMarkers.push(m);
+  });
 }
 
 // -------------------------------------------------------------------

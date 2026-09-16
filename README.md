@@ -17,10 +17,11 @@ pip install -r requirements.txt
 # generate the synthetic incident dataset the risk surface reads from
 python scripts/generate_synthetic_data.py
 
-# optional: real open data (GDACS is instant; UNOSAT/FIRMS download data once)
+# optional: real open data (GDACS is instant; UNOSAT/FIRMS/health facilities download data once)
 python scripts/ingest_gdacs.py
 python scripts/ingest_unosat_flood.py
 python scripts/ingest_firms.py
+python scripts/ingest_health_facilities.py
 
 # create an officer login (no default credentials ship in source)
 python scripts/create_officer.py <your-username>

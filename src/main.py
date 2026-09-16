@@ -20,6 +20,7 @@ from src.schemas import (
     BroadcastRequest,
     BroadcastResponse,
     BulkReportRequest,
+    HealthFacilityOut,
     IncidentOut,
     IncidentReport,
     PredictionRequest,
@@ -322,6 +323,39 @@ def list_broadcasts(officer: str = Depends(get_current_officer)):
     rows = conn.execute("SELECT * FROM broadcasts ORDER BY id DESC LIMIT 50").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# -------------------------------------------------------------------
+# Health facilities - "route to help" for medical incidents, distinct from
+# risk-avoidance safe routing (which answers "route away from danger").
+# See scripts/ingest_health_facilities.py.
+# -------------------------------------------------------------------
+
+@app.get("/facilities/nearest", response_model=list[HealthFacilityOut])
+@limiter.limit("30/minute")
+def nearest_facilities(request: Request, latitude: float, longitude: float,
+                        limit: int = 5, emergency_only: bool = False):
+    conn = get_connection()
+    query = "SELECT * FROM health_facilities"
+    if emergency_only:
+        query += " WHERE has_emergency = 'yes'"
+    rows = conn.execute(query).fetchall()
+    conn.close()
+
+    ranked = sorted(
+        (dict(r) | {"distance_km": round(haversine_km(latitude, longitude, r["latitude"], r["longitude"]), 2)}
+         for r in rows),
+        key=lambda r: r["distance_km"],
+    )
+    return ranked[:limit]
+
+
+@app.get("/facilities", response_model=list[HealthFacilityOut])
+def list_facilities(limit: int = 2000):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM health_facilities LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [HealthFacilityOut(**dict(r)) for r in rows]
 
 
 # -------------------------------------------------------------------

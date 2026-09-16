@@ -114,5 +114,23 @@ def init_db():
             UNIQUE(event_code, area)
         )
     """)
+    # Populated by scripts/ingest_health_facilities.py - real hospital/clinic
+    # locations (healthsites.io via HDX), for "route to help" (medical
+    # incidents) rather than "route away from danger" (the risk-avoidance
+    # safe route). Unlike FIRMS, this is a slowly-changing registry, not a
+    # rolling snapshot - re-running accumulates/updates by osm_id rather
+    # than deleting and replacing.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS health_facilities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            osm_id TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            amenity TEXT NOT NULL,
+            has_emergency TEXT,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     conn.commit()
     conn.close()

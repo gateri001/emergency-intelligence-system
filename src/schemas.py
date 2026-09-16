@@ -105,3 +105,13 @@ class IncidentOut(BaseModel):
 
 class VoteRequest(BaseModel):
     confirm: bool = Field(..., description="True to corroborate the report, false to dispute it")
+
+
+class HealthFacilityOut(BaseModel):
+    id: int
+    name: str
+    amenity: str
+    has_emergency: str | None
+    latitude: float
+    longitude: float
+    distance_km: float | None = None

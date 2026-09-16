@@ -93,3 +93,23 @@ def test_citizen_report_endpoint_is_rate_limited(client):
 def test_login_rejects_bad_credentials(client, officer_token):
     res = client.post("/token", data={"username": "test_officer", "password": "wrong"})
     assert res.status_code == 400
+
+
+def test_nearest_facilities_sorted_by_distance(client):
+    from src.database import get_connection
+
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO health_facilities (osm_id, name, amenity, has_emergency, latitude, longitude) VALUES "
+        "('1', 'Far Clinic', 'clinic', NULL, -1.30, 36.90), "
+        "('2', 'Near Hospital', 'hospital', 'yes', -1.2865, 36.8175)"
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/facilities/nearest?latitude=-1.286389&longitude=36.817223&limit=5")
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data) == 2
+    assert data[0]["name"] == "Near Hospital"
+    assert data[0]["distance_km"] < data[1]["distance_km"]

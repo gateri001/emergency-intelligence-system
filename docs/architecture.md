@@ -157,6 +157,26 @@ critical threshold (0.6) regardless of the fire's actual scale - FRP
 (radiative power, already present in the raw data) could differentiate a
 borderline 10MW detection from a 200MW blaze, but isn't used for that yet.
 
+**Medical pipeline specifics**: unlike fire, there's no equivalent of FIRMS
+for medical emergencies - no public sensor feed detects "someone collapsed
+here." The report -> confidence -> corroboration -> tier flow is otherwise
+identical to every other category. What medical specifically needed
+instead was a different kind of routing: risk-avoidance safe routing
+(`/route/safe`) answers "route away from danger," which is the wrong
+question for a medical emergency - the useful one is "route toward real
+help." `scripts/ingest_health_facilities.py` pulls real hospital/clinic
+locations from the Kenya Healthsites dataset (healthsites.io via HDX,
+refreshed roughly every 90 days - a slowly-changing registry, updated by
+`osm_id` on re-run rather than replaced like FIRMS's rolling snapshot),
+filtered to hospital/clinic/doctors (960 with usable coordinates as of
+this writing; ~26% of the raw dataset lacks point coordinates - OSM
+building-outline features without a computed centroid - and is skipped,
+not force-fit). `GET /facilities/nearest` ranks real facilities by
+haversine distance from any point; `has_emergency` is only reliably
+populated for ~4% of entries (an OSM tagging gap, not a data quality
+signal about the facility itself) so it's surfaced as a bonus badge, not
+used as a hard filter.
+
 **Alert tiers** (`alert_tier()`): `in_app` -> `sms_recommended` -> `critical`,
 at category-specific thresholds (hazard/medical cross into `sms_recommended`
 at 30% confidence and `critical` at 60%, matching the original design
@@ -177,8 +197,11 @@ to cross yet - see "Explicitly not yet built" below.
   `scripts/generate_synthetic_data.py`, not sourced from real records.
 - A live SMS provider behind the broadcast system (console-only for now;
   see `src/broadcast.py`).
-- Real safe-zone locations (police stations, hospitals) — currently "safe"
-  means "lowest-risk nearby cell," not a verified point of safety.
+- Real safe-zone locations for crime/flood/fire (police stations) —
+  "safe" for risk-avoidance routing still means "lowest-risk nearby cell,"
+  not a verified point of safety. Partially resolved for medical: real
+  hospital/clinic locations now exist (see "Medical pipeline specifics"
+  below) - police stations are the remaining gap.
 - Cell Broadcast (SMS-CB) for true no-opt-in-required reach — current
   broadcast only reaches people who've subscribed via `/subscribers`.
 - Fine-grained national risk resolution — the general risk surface is
