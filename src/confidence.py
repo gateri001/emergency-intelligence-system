@@ -23,6 +23,7 @@ unvalidated scrappy heuristic directly to mass-message real phone numbers is
 a real liability and trust risk with no funding or legal backing behind it
 yet - flagged as a deliberate choice, not an oversight.
 """
+import json
 from datetime import datetime
 
 from src.risk_surface import TYPE_CATEGORY
@@ -40,6 +41,7 @@ DEFAULT_CITIZEN_BASE = 0.20
 EVIDENCE_BONUS = 0.15
 NEARBY_REPORT_BONUS = 0.20  # per independent corroborating report, capped below
 MAX_NEARBY_BONUS = 0.40
+HISTORICAL_GROUND_TRUTH_BONUS = 0.20  # report falls inside a real, satellite-verified past flood zone
 
 VOTE_CONFIRM_BONUS = 0.15
 VOTE_DISPUTE_PENALTY = 0.20
@@ -63,7 +65,8 @@ def category_for(incident_type: str) -> str:
     return TYPE_CATEGORY.get(incident_type, "hazard")
 
 
-def compute_initial_confidence(source: str, incident_type: str, has_evidence: bool, nearby_count: int) -> float:
+def compute_initial_confidence(source: str, incident_type: str, has_evidence: bool, nearby_count: int,
+                                historical_ground_truth: bool = False) -> float:
     category = category_for(incident_type)
     if source in SOURCE_BASE_CONFIDENCE:
         base = SOURCE_BASE_CONFIDENCE[source]
@@ -74,7 +77,48 @@ def compute_initial_confidence(source: str, incident_type: str, has_evidence: bo
     if has_evidence:
         score += EVIDENCE_BONUS
     score += min(nearby_count * NEARBY_REPORT_BONUS, MAX_NEARBY_BONUS)
+    if historical_ground_truth:
+        score += HISTORICAL_GROUND_TRUTH_BONUS
     return round(min(score, 1.0), 3)
+
+
+FLOOD_ZONE_BUFFER_DEG = 0.01  # ~1.1km - see docstring below for why this isn't strict containment
+
+
+def is_within_known_flood_zone(conn, incident_type: str, latitude: float, longitude: float) -> bool:
+    """True if (lat, lon) is at or near a real, satellite-verified historical
+    flood extent (UNOSAT, via scripts/ingest_unosat_flood.py) - only
+    meaningful for flood reports; every other type returns False
+    immediately.
+
+    Deliberately a small buffer (~1.1km), not strict point-in-polygon
+    containment: tested against real data, the reference coordinate for
+    Githurai (used elsewhere for area-matching) sits ~73m outside the
+    mapped polygon despite being a real, known-flooded location - a
+    combination of the reference point being an approximate town-center
+    coordinate, not a precise boundary, and the polygon itself being
+    simplified for file size (see ingest_unosat_flood.py). Strict
+    containment would silently drop real, physically meaningful evidence
+    right at the boundary; a small buffer treats "clearly at this mapped
+    flood zone" and "exactly inside its simplified outline" as the same
+    thing, which they should be."""
+    if incident_type != "flood":
+        return False
+
+    from shapely.geometry import Point, shape
+
+    rows = conn.execute("SELECT geojson FROM flood_extents").fetchall()
+    if not rows:
+        return False
+    point = Point(longitude, latitude)
+    for r in rows:
+        try:
+            geom = shape(json.loads(r["geojson"]))
+        except (ValueError, TypeError):
+            continue
+        if geom.distance(point) <= FLOOD_ZONE_BUFFER_DEG:
+            return True
+    return False
 
 
 def apply_vote(current_confidence: float, incident_type: str, confirm: bool) -> float:

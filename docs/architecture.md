@@ -214,6 +214,32 @@ existing officer-gated `/alert/broadcast` endpoint. Auto-firing a real mass
 SMS off a brand-new, unvalidated scrappy heuristic was a deliberate line not
 to cross yet - see "Explicitly not yet built" below.
 
+**Flood pipeline specifics**: unlike fire, real-time flood corroboration
+(Copernicus GloFAS/Sentinel-1 Global Flood Monitoring) was investigated but
+not built - its real access path requires registering for a Copernicus
+openEO Platform account and OIDC authentication, not a static API key like
+Africa's Talking/SMS Gate. That's a real signup step only a human can do,
+and without it there's no way to write even "code-complete but unverified"
+integration code the way the SMS providers got built - there's nothing to
+gate it behind yet. Flagged as a genuine future step, not attempted with
+guesswork.
+
+What auditing the existing flood code turned up instead: real,
+satellite-verified UNOSAT ground truth (exact flood-extent polygons from
+the actual 2024 event) was sitting in the database with zero influence on
+live confidence scoring - it only fed the dashboard display and the
+synthetic-data generator. `is_within_known_flood_zone()`
+(`src/confidence.py`) now checks a new flood report against that real
+geometry and adds a confidence bonus when it's at or near a
+satellite-confirmed historical flood zone. This deliberately uses a
+~1.1km distance buffer, not strict point-in-polygon containment - tested
+against real data, the reference coordinate for Githurai (used elsewhere
+for area-matching) sits ~73m outside the mapped polygon despite being a
+real, known-flooded location, a combination of approximate reference
+coordinates and the polygon's own simplification for file size. Strict
+containment would have silently dropped real evidence right at the
+boundary.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not
@@ -261,8 +287,11 @@ to cross yet - see "Explicitly not yet built" below.
   way. Out of scope until the native app exists.
 - Live satellite/hydrological cross-referencing for flood confidence —
   Copernicus GloFAS/Sentinel-1 Global Flood Monitoring is the identified
-  real, free, self-serve source (see session notes), not yet integrated.
-  Google Flood Hub is live and free but its API is currently waitlist-gated.
+  real source; access requires registering for a Copernicus openEO
+  Platform account and OIDC authentication (not a static API key), a real
+  signup step not yet done. Google Flood Hub is live and free but its API
+  is currently waitlist-gated. Historical (not live) UNOSAT ground truth
+  is integrated - see "Flood pipeline specifics" above.
 - Real SMS delivery is code-complete but UNTESTED against a live account -
   `AfricasTalkingProvider` (`src/broadcast.py`) implements the actual SDK
   call, but no real AT_USERNAME/AT_API_KEY have been used against it yet.

@@ -11,7 +11,7 @@ from slowapi.util import get_remote_address
 
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.broadcast import get_provider
-from src.confidence import alert_tier, apply_vote, compute_initial_confidence, count_nearby_reports
+from src.confidence import alert_tier, apply_vote, compute_initial_confidence, count_nearby_reports, is_within_known_flood_zone
 from src.database import get_connection, init_db
 from src.geo import haversine_km
 from src.risk_surface import point_risk
@@ -133,7 +133,8 @@ def _insert_incident(source: str, report: IncidentReport) -> int:
     # Corroboration signal computed BEFORE inserting this report, so it
     # doesn't count itself.
     nearby = count_nearby_reports(conn, report.latitude, report.longitude, incident_type, report.timestamp)
-    confidence = compute_initial_confidence(source, incident_type, report.has_evidence, nearby)
+    ground_truth = is_within_known_flood_zone(conn, incident_type, report.latitude, report.longitude)
+    confidence = compute_initial_confidence(source, incident_type, report.has_evidence, nearby, ground_truth)
     tier = alert_tier(confidence, incident_type)
 
     cursor = conn.execute(

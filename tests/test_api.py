@@ -127,6 +127,34 @@ def test_broadcast_warns_when_source_was_officers_only(client, officer_token):
     assert res2.json()["reporter_safety_warning"] is None
 
 
+def test_flood_report_inside_known_flood_zone_gets_ground_truth_bonus(client):
+    import json
+
+    from src.database import get_connection
+
+    # A simple square "known flood zone" around (-1.19, 36.90)
+    square = {
+        "type": "Polygon",
+        "coordinates": [[[36.89, -1.20], [36.91, -1.20], [36.91, -1.18], [36.89, -1.18], [36.89, -1.20]]],
+    }
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO flood_extents (event_code, region, geojson, source_date) VALUES (?, ?, ?, ?)",
+        ("TEST01", "test_region", json.dumps(square), "2024-01-01"),
+    )
+    conn.commit()
+    conn.close()
+
+    inside_id = _report(client, type="flood", latitude=-1.19, longitude=36.90)  # inside the square
+    outside_id = _report(client, type="flood", latitude=-2.50, longitude=38.50)  # nowhere near it
+
+    feed = {r["id"]: r for r in client.get("/incidents").json()}
+    # base 0.35 (hazard) + ground truth 0.20 = 0.55
+    assert feed[inside_id]["confidence_score"] == 0.55
+    # base 0.35, no ground truth bonus
+    assert feed[outside_id]["confidence_score"] == 0.35
+
+
 def test_nearest_facilities_sorted_by_distance(client):
     from src.database import get_connection
 
