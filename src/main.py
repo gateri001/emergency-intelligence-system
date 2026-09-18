@@ -25,6 +25,10 @@ from src.schemas import (
     HealthFacilityOut,
     IncidentOut,
     IncidentReport,
+    MissingChildCaseOfficerOut,
+    MissingChildCaseOut,
+    MissingChildReport,
+    MissingChildStatusUpdate,
     PredictionRequest,
     PredictionResponse,
     SafeRouteRequest,
@@ -412,6 +416,107 @@ def list_facilities(limit: int = 2000):
     rows = conn.execute("SELECT * FROM health_facilities LIMIT ?", (limit,)).fetchall()
     conn.close()
     return [HealthFacilityOut(**dict(r)) for r in rows]
+
+
+# -------------------------------------------------------------------
+# Missing Child Alert - its own table and trust model, not a variant of
+# incident reporting. Every report starts hidden (status='reported') and
+# requires explicit officer verification before any public visibility -
+# the opposite default from flood/fire, given the real risk of a
+# weaponized report (custody disputes, harassment) and the legal weight of
+# a minor's data. reporter_phone is collected (unlike every other report
+# type) because this is an investigation, not a risk signal, and is never
+# exposed on the public endpoints below.
+# -------------------------------------------------------------------
+
+@app.post("/missing-child/report")
+@limiter.limit("10/minute")
+def report_missing_child(request: Request, report: MissingChildReport):
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO missing_child_cases
+           (child_name, age, physical_description, clothing_description, last_seen_latitude,
+            last_seen_longitude, last_seen_area, last_seen_time, has_photo, reporter_phone,
+            reporter_relationship)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (report.child_name.strip(), report.age, report.physical_description.strip(),
+         report.clothing_description.strip(), report.last_seen_latitude, report.last_seen_longitude,
+         report.last_seen_area.strip(), report.last_seen_time, int(report.has_photo),
+         report.reporter_phone.strip(), report.reporter_relationship.strip()),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "received", "case_id": new_id}
+
+
+@app.get("/missing-child/cases", response_model=list[MissingChildCaseOut])
+def list_missing_child_cases():
+    """Public feed - only verified cases (an active search worth the public
+    knowing about) and found_safe resolutions (good news, appropriate to
+    share). Never 'reported' (unverified), 'found_deceased' (needs a human-
+    mediated, not automated, channel), or 'closed_false_report' (no reason
+    to have ever surfaced it, and no reason to publicly flag a false
+    report against whoever filed it)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM missing_child_cases WHERE status IN ('verified', 'found_safe') "
+        "ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [MissingChildCaseOut(**dict(r)) for r in rows]
+
+
+@app.get("/missing-child/cases/all", response_model=list[MissingChildCaseOfficerOut])
+def list_missing_child_cases_all(officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM missing_child_cases ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [MissingChildCaseOfficerOut(**dict(r)) for r in rows]
+
+
+@app.post("/missing-child/cases/{case_id}/verify", response_model=MissingChildCaseOfficerOut)
+def verify_missing_child_case(case_id: int, officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Case not found")
+    if row["status"] != "reported":
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Case is already '{row['status']}', not pending verification")
+
+    conn.execute(
+        "UPDATE missing_child_cases SET status = 'verified', verified_by = ?, updated_at = datetime('now') WHERE id = ?",
+        (officer, case_id),
+    )
+    conn.commit()
+    updated = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
+    conn.close()
+    return MissingChildCaseOfficerOut(**dict(updated))
+
+
+@app.post("/missing-child/cases/{case_id}/status", response_model=MissingChildCaseOfficerOut)
+def update_missing_child_case_status(case_id: int, update: MissingChildStatusUpdate,
+                                      officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Case not found")
+    if row["status"] in ("found_safe", "found_deceased", "closed_false_report"):
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Case is already resolved as '{row['status']}'")
+
+    conn.execute(
+        "UPDATE missing_child_cases SET status = ?, verified_by = COALESCE(verified_by, ?), "
+        "updated_at = datetime('now') WHERE id = ?",
+        (update.status, officer, case_id),
+    )
+    conn.commit()
+    updated = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
+    conn.close()
+    return MissingChildCaseOfficerOut(**dict(updated))
 
 
 # -------------------------------------------------------------------

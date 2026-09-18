@@ -109,6 +109,50 @@ class VoteRequest(BaseModel):
     confirm: bool = Field(..., description="True to corroborate the report, false to dispute it")
 
 
+class MissingChildReport(BaseModel):
+    child_name: str = Field(..., min_length=1)
+    age: int | None = Field(None, ge=0, le=17)
+    physical_description: str = Field(..., min_length=1, description="Height, build, distinguishing features")
+    clothing_description: str = ""
+    last_seen_latitude: float
+    last_seen_longitude: float
+    last_seen_area: str = ""
+    last_seen_time: str = Field(..., examples=["2026-09-18 14:30"])
+    has_photo: bool = False
+    # The one deliberate exception to "no reporter identity is ever
+    # collected" - this is an investigation, not a risk signal, and
+    # officers need to be able to follow up. Never exposed publicly.
+    reporter_phone: str = Field(..., examples=["+254712345678"])
+    reporter_relationship: str = Field("", examples=["parent", "guardian", "neighbor"])
+
+
+class MissingChildCaseOut(BaseModel):
+    """Public-facing view - no reporter contact, ever."""
+    id: int
+    child_name: str
+    age: int | None
+    physical_description: str
+    clothing_description: str
+    last_seen_latitude: float
+    last_seen_longitude: float
+    last_seen_area: str
+    last_seen_time: str
+    has_photo: bool
+    status: str
+    created_at: str
+
+
+class MissingChildCaseOfficerOut(MissingChildCaseOut):
+    """Officer view - adds the reporter contact needed to actually follow up."""
+    reporter_phone: str
+    reporter_relationship: str
+    verified_by: str | None
+
+
+class MissingChildStatusUpdate(BaseModel):
+    status: Literal["verified", "found_safe", "found_deceased", "closed_false_report"]
+
+
 class HealthFacilityOut(BaseModel):
     id: int
     name: str

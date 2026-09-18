@@ -29,6 +29,22 @@ The same is true of confirming or disputing someone else's report
   Surjection). Phone numbers are not used for anything else and are not
   linked to any incident report someone may separately file.
 
+- **Missing Child Alert reports**: a child's name, age, physical
+  description, and last-seen location/time — plus, unlike every other
+  report type in this system, the reporter's phone number and their
+  relationship to the child. This is the one deliberate exception to "no
+  reporter identity is ever collected": a missing-child case is an
+  investigation, and officers need to be able to follow up with whoever
+  filed it. That phone number is visible only to authenticated officers
+  (`/missing-child/cases/all`) and is never exposed on the public endpoint
+  (`/missing-child/cases`). A report also starts hidden entirely —
+  `status='reported'` — and only becomes publicly visible at all once an
+  officer verifies it, given the real risk of a false or malicious report
+  (custody disputes, harassment) and the added weight of handling a
+  minor's data under the Data Protection Act. A case resolved as
+  `found_deceased` or `closed_false_report` is never exposed publicly
+  either, only to officers - see `architecture.md` for the full reasoning.
+
 ## Storage
 
 - Incident and officer data lives in a local SQLite database

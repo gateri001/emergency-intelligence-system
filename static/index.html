@@ -72,6 +72,7 @@
       <div class="tab" data-tab="route">Safe Route</div>
       <div class="tab" data-tab="feed">Live Feed</div>
       <div class="tab" data-tab="data">Open Data</div>
+      <div class="tab" data-tab="missing">Missing Child</div>
       <div class="tab" data-tab="officer">Officer</div>
     </div>
 
@@ -159,6 +160,38 @@
       <div class="result" id="structuresSummary">Loading…</div>
     </div>
 
+    <!-- MISSING CHILD -->
+    <div class="tab-content" id="tab-missing">
+      <h3>Report a Missing Child</h3>
+      <div class="hint">Every report is reviewed by an officer before anything is made public — this protects both the child and the family from a false or malicious report going out widely. Officers can still follow up immediately either way.</div>
+      <div class="selected-box" id="selectedPointMissing">No last-seen location selected yet. Click the map.</div>
+
+      <label class="field-label">Child's name</label>
+      <input id="mcName" />
+      <label class="field-label">Age</label>
+      <input id="mcAge" type="number" min="0" max="17" />
+      <label class="field-label">Physical description</label>
+      <input id="mcPhysical" placeholder="Height, build, distinguishing features" />
+      <label class="field-label">Clothing (optional)</label>
+      <input id="mcClothing" placeholder="What they were last seen wearing" />
+      <label class="field-label">Last-seen area (optional label)</label>
+      <input id="mcArea" placeholder="e.g. near Kibera market" />
+      <div class="checkbox-row">
+        <input type="checkbox" id="mcHasPhoto" /> I have a photo
+      </div>
+      <label class="field-label">Your phone number (officers only, never shown publicly)</label>
+      <input id="mcPhone" placeholder="+254712345678" />
+      <label class="field-label">Your relationship to the child</label>
+      <input id="mcRelationship" placeholder="parent / guardian / neighbor / other" />
+
+      <button onclick="reportMissingChild()">Submit Report</button>
+      <div class="result" id="missingReportResult"></div>
+
+      <h3 style="margin-top:16px;">Active / Resolved Cases</h3>
+      <div class="hint">Only officer-verified cases and safe resolutions appear here.</div>
+      <div class="result" id="missingPublicList">Loading…</div>
+    </div>
+
     <!-- OFFICER -->
     <div class="tab-content" id="tab-officer">
       <div id="officerLoggedOut">
@@ -193,6 +226,9 @@
 
         <h3 style="margin-top:16px;">All Incidents (incl. officers-only)</h3>
         <div class="result" id="allIncidentsList">Loading…</div>
+
+        <h3 style="margin-top:16px;">Missing Child Cases (all statuses)</h3>
+        <div class="result" id="missingOfficerList">Loading…</div>
       </div>
     </div>
   </div>
@@ -231,7 +267,7 @@ let selectedMarker = null;
 function setSelected(lat, lon) {
   selected = { lat, lon };
   const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  ['selectedPoint', 'selectedPointRisk', 'selectedPointRoute'].forEach(id => {
+  ['selectedPoint', 'selectedPointRisk', 'selectedPointRoute', 'selectedPointMissing'].forEach(id => {
     document.getElementById(id).innerText = label;
   });
   if (selectedMarker) map.removeLayer(selectedMarker);
@@ -446,6 +482,7 @@ function refreshOfficerView() {
     document.getElementById('officerName').innerText = officerUser || '';
     loadRecommended();
     loadAllIncidents();
+    loadMissingOfficer();
   } else {
     loggedOut.style.display = 'block';
     loggedIn.style.display = 'none';
@@ -510,6 +547,87 @@ async function triggerBroadcast() {
   el.innerHTML = msg;
 }
 
+// -------------------------------------------------------------------
+// Missing Child Alert
+// -------------------------------------------------------------------
+async function reportMissingChild() {
+  const el = document.getElementById('missingReportResult');
+  if (!selected) { el.innerText = 'Click the map to set a last-seen location first.'; return; }
+  const body = {
+    child_name: document.getElementById('mcName').value,
+    age: document.getElementById('mcAge').value ? parseInt(document.getElementById('mcAge').value, 10) : null,
+    physical_description: document.getElementById('mcPhysical').value,
+    clothing_description: document.getElementById('mcClothing').value,
+    last_seen_latitude: selected.lat,
+    last_seen_longitude: selected.lon,
+    last_seen_area: document.getElementById('mcArea').value,
+    last_seen_time: nowTimestamp(),
+    has_photo: document.getElementById('mcHasPhoto').checked,
+    reporter_phone: document.getElementById('mcPhone').value,
+    reporter_relationship: document.getElementById('mcRelationship').value,
+  };
+  const res = await fetch(`${API}/missing-child/report`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  el.innerText = res.ok
+    ? `Reported (case #${data.case_id}). An officer will review this before anything is made public.`
+    : (data.detail || 'Error submitting report');
+  if (res.ok) loadMissingPublic();
+}
+
+function renderMissingCase(c, isOfficer) {
+  const statusLabel = { reported: 'pending review', verified: 'active search', found_safe: 'FOUND SAFE',
+    found_deceased: 'found deceased', closed_false_report: 'closed (false report)' }[c.status] || c.status;
+  let actions = '';
+  if (isOfficer) {
+    if (c.status === 'reported') {
+      actions += `<button class="vote-btn" onclick="verifyMissingCase(${c.id})">Verify</button>`;
+    }
+    if (c.status === 'reported' || c.status === 'verified') {
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'found_safe')">Found safe</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'found_deceased')">Found deceased</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'closed_false_report')">False report</button>`;
+    }
+  }
+  return `<div class="incident-row">
+    ${isOfficer ? `#${c.id} ` : ''}${c.child_name}${c.age != null ? ` (${c.age})` : ''} — <span class="badge">${statusLabel}</span><br>
+    <small>${c.physical_description}${c.clothing_description ? ', ' + c.clothing_description : ''}</small><br>
+    <small>Last seen: ${c.last_seen_area || 'location on map'} — ${c.last_seen_time}</small>
+    ${isOfficer ? `<br><small>Reporter: ${c.reporter_phone} (${c.reporter_relationship || 'relationship not given'})</small>` : ''}
+    ${actions ? `<br>${actions}` : ''}
+  </div>`;
+}
+
+async function loadMissingPublic() {
+  const res = await fetch(`${API}/missing-child/cases`);
+  const data = await res.json();
+  const el = document.getElementById('missingPublicList');
+  el.innerHTML = data.length ? data.map(c => renderMissingCase(c, false)).join('') : 'No active or resolved cases right now.';
+}
+
+async function loadMissingOfficer() {
+  const res = await fetch(`${API}/missing-child/cases/all`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const data = await res.json();
+  const el = document.getElementById('missingOfficerList');
+  el.innerHTML = data.length ? data.map(c => renderMissingCase(c, true)).join('') : 'No cases on file.';
+}
+
+async function verifyMissingCase(id) {
+  await fetch(`${API}/missing-child/cases/${id}/verify`, { method: 'POST', headers: officerHeaders() });
+  loadMissingOfficer();
+  loadMissingPublic();
+}
+
+async function updateMissingStatus(id, status) {
+  await fetch(`${API}/missing-child/cases/${id}/status`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify({ status })
+  });
+  loadMissingOfficer();
+  loadMissingPublic();
+}
+
 refreshOfficerView();
 
 // -------------------------------------------------------------------
@@ -519,6 +637,7 @@ loadRecent();
 loadExternalEvents();
 loadFloodExtents();
 loadStructuresSummary();
+loadMissingPublic();
 setInterval(loadRecent, 15000);
 </script>
 </body>

@@ -116,6 +116,39 @@ def init_db():
             UNIQUE(event_code, area)
         )
     """)
+    # Missing Child Alert - deliberately its own table, not a fifth
+    # `incidents` type: different fields, different lifecycle (doesn't
+    # decay, stays active until resolved), different trust model (starts
+    # hidden and requires officer verification before any public
+    # visibility - the opposite default from flood/fire, given the real
+    # risk of a weaponized report - custody disputes, harassment - and the
+    # legal weight of a minor's data under Kenya's Data Protection Act).
+    # reporter_phone is a deliberate, singular exception to "no identity is
+    # ever collected" elsewhere in this system: this is fundamentally an
+    # investigation, and officers need to be able to follow up with
+    # whoever reported it. Never exposed publicly - see /missing-child/cases
+    # vs /missing-child/cases/all in src/main.py.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS missing_child_cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            child_name TEXT NOT NULL,
+            age INTEGER,
+            physical_description TEXT NOT NULL,
+            clothing_description TEXT NOT NULL DEFAULT '',
+            last_seen_latitude REAL NOT NULL,
+            last_seen_longitude REAL NOT NULL,
+            last_seen_area TEXT NOT NULL DEFAULT '',
+            last_seen_time TEXT NOT NULL,
+            has_photo INTEGER NOT NULL DEFAULT 0,
+            reporter_phone TEXT NOT NULL,
+            reporter_relationship TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'reported'
+                CHECK(status IN ('reported', 'verified', 'found_safe', 'found_deceased', 'closed_false_report')),
+            verified_by TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     # Populated by scripts/ingest_health_facilities.py - real hospital/clinic
     # locations (healthsites.io via HDX), for "route to help" (medical
     # incidents) rather than "route away from danger" (the risk-avoidance

@@ -286,6 +286,42 @@ coordinates and the polygon's own simplification for file size. Strict
 containment would have silently dropped real evidence right at the
 boundary.
 
+## Missing Child Alert
+
+Deliberately its own table (`missing_child_cases`) and its own endpoints
+(`/missing-child/*`), not a fifth `incidents` type - the fields (child's
+name, age, physical description, what they were wearing) and lifecycle
+(doesn't decay, stays active until resolved: `reported` -> `verified` ->
+`found_safe` / `found_deceased` / `closed_false_report`) don't fit the
+generic incident model, and forcing them in would mean a pile of columns
+only relevant to one type.
+
+The trust model runs backward from flood/fire on purpose: every report
+starts hidden (`status='reported'`) and requires explicit officer
+verification (`POST /missing-child/cases/{id}/verify`) before it's
+eligible for any public visibility at all - the opposite of flood's
+"trust the first report" default. This isn't a stylistic choice: a
+missing-child report carries real, documented risk of being weaponized
+(custody disputes, harassment) and involves a minor's data under Kenya's
+Data Protection Act, so the cost of a false positive going public is much
+higher here than for a flood report.
+
+`GET /missing-child/cases` (public) only ever returns `verified` (an
+active search worth the public knowing about) or `found_safe` (good news,
+appropriate to share) - never `reported` (unverified), `found_deceased`
+(needs a human-mediated channel, not an automated feed continuing to
+display it), or `closed_false_report` (no reason to have ever surfaced it,
+and no reason to publicly flag whoever filed it).
+
+`reporter_phone` is a deliberate, singular exception to "no reporter
+identity is ever collected," which is load-bearing everywhere else in this
+system (it's what makes `officers_only` visibility on a crime report
+actually protect the reporter). A missing-child case is fundamentally an
+investigation, not a passive risk signal - officers need to be able to
+follow up with whoever reported it. It is never exposed on
+`/missing-child/cases`, only on the officer-authenticated
+`/missing-child/cases/all`.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not

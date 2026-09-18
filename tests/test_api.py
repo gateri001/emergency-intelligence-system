@@ -127,6 +127,81 @@ def test_broadcast_warns_when_source_was_officers_only(client, officer_token):
     assert res2.json()["reporter_safety_warning"] is None
 
 
+def _report_missing_child(client, **overrides):
+    body = {
+        "child_name": "Test Child",
+        "age": 8,
+        "physical_description": "short, curly hair",
+        "last_seen_latitude": -1.28,
+        "last_seen_longitude": 36.82,
+        "last_seen_time": "2026-09-18 14:00",
+        "reporter_phone": "+254700000000",
+    }
+    body.update(overrides)
+    res = client.post("/missing-child/report", json=body)
+    assert res.status_code == 200, res.text
+    return res.json()["case_id"]
+
+
+def test_missing_child_report_starts_hidden_from_public(client):
+    case_id = _report_missing_child(client)
+    public_ids = [c["id"] for c in client.get("/missing-child/cases").json()]
+    assert case_id not in public_ids
+
+
+def test_missing_child_public_response_never_includes_reporter_phone(client, officer_token):
+    case_id = _report_missing_child(client)
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    client.post(f"/missing-child/cases/{case_id}/verify", headers=headers)
+
+    public_case = next(c for c in client.get("/missing-child/cases").json() if c["id"] == case_id)
+    assert "reporter_phone" not in public_case
+
+    officer_case = next(c for c in client.get("/missing-child/cases/all", headers=headers).json() if c["id"] == case_id)
+    assert officer_case["reporter_phone"] == "+254700000000"
+
+
+def test_missing_child_verification_flow(client, officer_token):
+    case_id = _report_missing_child(client)
+    headers = {"Authorization": f"Bearer {officer_token}"}
+
+    # can't verify twice
+    res = client.post(f"/missing-child/cases/{case_id}/verify", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["status"] == "verified"
+    assert res.json()["verified_by"] is not None
+
+    res2 = client.post(f"/missing-child/cases/{case_id}/verify", headers=headers)
+    assert res2.status_code == 400
+
+    # now visible publicly
+    public_ids = [c["id"] for c in client.get("/missing-child/cases").json()]
+    assert case_id in public_ids
+
+
+def test_missing_child_found_safe_is_public_found_deceased_is_not(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+
+    safe_id = _report_missing_child(client, child_name="Safe Child")
+    client.post(f"/missing-child/cases/{safe_id}/verify", headers=headers)
+    client.post(f"/missing-child/cases/{safe_id}/status", json={"status": "found_safe"}, headers=headers)
+
+    deceased_id = _report_missing_child(client, child_name="Other Child")
+    client.post(f"/missing-child/cases/{deceased_id}/verify", headers=headers)
+    client.post(f"/missing-child/cases/{deceased_id}/status", json={"status": "found_deceased"}, headers=headers)
+
+    public_ids = [c["id"] for c in client.get("/missing-child/cases").json()]
+    assert safe_id in public_ids
+    assert deceased_id not in public_ids
+
+
+def test_missing_child_officer_endpoints_require_auth(client):
+    case_id = _report_missing_child(client)
+    assert client.get("/missing-child/cases/all").status_code == 401
+    assert client.post(f"/missing-child/cases/{case_id}/verify").status_code == 401
+    assert client.post(f"/missing-child/cases/{case_id}/status", json={"status": "found_safe"}).status_code == 401
+
+
 def test_report_ends_at_strategic_scoring_stage_after_background_refinement(client):
     inc_id = _report(client, type="flood")
     row = next(r for r in client.get("/incidents").json() if r["id"] == inc_id)
