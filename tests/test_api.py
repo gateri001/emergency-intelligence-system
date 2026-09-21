@@ -416,3 +416,15 @@ def test_firms_detections_reach_officers_recommended_list(client, officer_token)
     assert len(fires) == 1
     assert fires[0]["scoring_stage"] == "strategic"
     assert fires[0]["alert_tier"] in ("sms_recommended", "critical")
+
+
+def test_security_headers_present_on_api_and_static_responses(client):
+    for path in ("/health", "/dashboard/"):
+        res = client.get(path)
+        assert res.headers["x-content-type-options"] == "nosniff", path
+        assert res.headers["x-frame-options"] == "DENY", path
+        assert res.headers["referrer-policy"] == "no-referrer", path
+
+
+def test_dashboard_is_revalidated_not_heuristically_cached(client):
+    assert client.get("/dashboard/").headers["cache-control"] == "no-cache"

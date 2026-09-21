@@ -240,6 +240,17 @@ const API = window.location.origin;
 const map = L.map('map').setView([-1.286389, 36.817223], 11);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
+// SECURITY: every value that came from the API (reporters control many of
+// them, and public endpoints accept anything) must go through esc() before
+// being placed in an innerHTML template or a Leaflet popup (which renders
+// HTML). Without this, a public report with <img onerror=...> in its "area"
+// ran script in every visitor's browser, including officers whose login
+// token lives in sessionStorage. tests/test_api.py scans this file for
+// unescaped interpolations of user-controlled fields.
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function nowTimestamp() {
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -334,7 +345,7 @@ async function predictRisk() {
   const data = await res.json();
   const el = document.getElementById('predictionResult');
   el.innerHTML = res.ok
-    ? `Predicted risk: <span class="severity-${data.predicted_severity}">${data.predicted_severity}</span> (score ${data.risk_score})`
+    ? `Predicted risk: <span class="severity-${esc(data.predicted_severity)}">${esc(data.predicted_severity)}</span> (score ${esc(data.risk_score)})`
     : (data.detail || 'Error getting prediction');
 }
 
@@ -386,11 +397,11 @@ async function findNearestFacilities() {
   facilityMarkers = [];
   if (!data.length) { resultEl.innerText = 'No known health facilities nearby.'; return; }
   resultEl.innerHTML = data.map(f =>
-    `<div class="incident-row">${f.name} <span class="badge">${f.amenity}</span><br><small>${f.distance_km} km away${f.has_emergency==='yes' ? ' — emergency services' : ''}</small></div>`
+    `<div class="incident-row">${esc(f.name)} <span class="badge">${esc(f.amenity)}</span><br><small>${esc(f.distance_km)} km away${f.has_emergency==='yes' ? ' — emergency services' : ''}</small></div>`
   ).join('');
   data.forEach(f => {
     const m = L.circleMarker([f.latitude, f.longitude], { radius: 7, color: '#38bdf8', fillColor: '#38bdf8', fillOpacity: 0.8 })
-      .addTo(map).bindPopup(`${f.name} (${f.amenity}) — ${f.distance_km} km`);
+      .addTo(map).bindPopup(`${esc(f.name)} (${esc(f.amenity)}) — ${esc(f.distance_km)} km`);
     facilityMarkers.push(m);
   });
 }
@@ -404,10 +415,10 @@ function renderIncidentRow(inc) {
   const stageBadge = inc.scoring_stage === 'reflex' ? ' <span class="badge">assessing</span>'
     : inc.scoring_stage === 'failed' ? ' <span class="badge" style="color:var(--red)">assessment failed</span>' : '';
   return `<div class="incident-row">
-    ${inc.type} — ${inc.area || 'unnamed location'} — <span class="severity-${inc.predicted_severity}">${severity}</span>${stageBadge}<br>
-    <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${inc.alert_tier}">${inc.alert_tier.replace('_',' ')}</span> — via ${inc.source}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
-    <button class="vote-btn" onclick="voteIncident(${inc.id}, true)">Confirm</button>
-    <button class="vote-btn" onclick="voteIncident(${inc.id}, false)">Dispute</button>
+    ${esc(inc.type)} — ${esc(inc.area || 'unnamed location')} — <span class="severity-${esc(inc.predicted_severity)}">${esc(severity)}</span>${stageBadge}<br>
+    <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${esc(inc.alert_tier)}">${esc(String(inc.alert_tier).replace('_',' '))}</span> — via ${esc(inc.source)}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
+    <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, true)">Confirm</button>
+    <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, false)">Dispute</button>
   </div>`;
 }
 
@@ -421,7 +432,7 @@ async function loadRecent() {
   data.forEach(inc => {
     if (inc.latitude && inc.longitude) {
       const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color: '#f87171' })
-        .addTo(map).bindPopup(`${inc.type} (${inc.predicted_severity}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
+        .addTo(map).bindPopup(`${esc(inc.type)} (${esc(inc.predicted_severity)}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
       markers.push(m);
     }
   });
@@ -444,7 +455,7 @@ async function loadExternalEvents() {
   const el = document.getElementById('externalEvents');
   if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_gdacs.py'; return; }
   el.innerHTML = data.map(e =>
-    `<div>${e.event_type} — ${e.name} <br><small>${e.from_date?.slice(0,10)} → ${e.to_date?.slice(0,10)} (${e.alert_level})</small></div>`
+    `<div>${esc(e.event_type)} — ${esc(e.name)} <br><small>${esc(e.from_date?.slice(0,10))} → ${esc(e.to_date?.slice(0,10))} (${esc(e.alert_level)})</small></div>`
   ).join('<hr style="border-color:var(--border)">');
 }
 
@@ -453,7 +464,7 @@ async function loadFloodExtents() {
   const data = await res.json();
   data.forEach(fe => {
     L.geoJSON(fe.geometry, { style: { color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.35 } })
-      .addTo(map).bindPopup(`Satellite-mapped flood extent — ${fe.region}, ${fe.source_date} (UNOSAT)`);
+      .addTo(map).bindPopup(`Satellite-mapped flood extent — ${esc(fe.region)}, ${esc(fe.source_date)} (UNOSAT)`);
   });
 }
 
@@ -462,7 +473,7 @@ async function loadStructuresSummary() {
   const data = await res.json();
   const el = document.getElementById('structuresSummary');
   if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_unosat_flood.py'; return; }
-  el.innerHTML = data.map(d => `<div>${d.area}: ${d.structure_count} structures affected</div>`).join('');
+  el.innerHTML = data.map(d => `<div>${esc(d.area)}: ${esc(d.structure_count)} structures affected</div>`).join('');
 }
 
 // -------------------------------------------------------------------
@@ -542,7 +553,7 @@ async function triggerBroadcast() {
   if (!res.ok) { el.innerText = data.detail || 'Broadcast failed'; return; }
   let msg = `Sent to ${data.recipients_reached} subscriber(s) within ${data.radius_km}km.`;
   if (data.reporter_safety_warning) {
-    msg += `<br><br><span style="color:var(--amber)">${data.reporter_safety_warning}</span>`;
+    msg += `<br><br><span style="color:var(--amber)">${esc(data.reporter_safety_warning)}</span>`;
   }
   el.innerHTML = msg;
 }
@@ -582,22 +593,22 @@ function renderMissingCase(c, isOfficer) {
   let actions = '';
   if (isOfficer) {
     if (c.status === 'reported') {
-      actions += `<button class="vote-btn" onclick="verifyMissingCase(${c.id})">Verify</button>`;
+      actions += `<button class="vote-btn" onclick="verifyMissingCase(${Number(c.id)})">Verify</button>`;
     }
     if (c.status === 'verified') {
-      actions += `<button class="vote-btn" style="background:var(--red)" onclick="broadcastMissingCase(${c.id})">Broadcast…</button>`;
+      actions += `<button class="vote-btn" style="background:var(--red)" onclick="broadcastMissingCase(${Number(c.id)})">Broadcast…</button>`;
     }
     if (c.status === 'reported' || c.status === 'verified') {
-      actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'found_safe')">Found safe</button>`;
-      actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'found_deceased')">Found deceased</button>`;
-      actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'closed_false_report')">False report</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'found_safe')">Found safe</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'found_deceased')">Found deceased</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'closed_false_report')">False report</button>`;
     }
   }
   return `<div class="incident-row">
-    ${isOfficer ? `#${c.id} ` : ''}${c.child_name}${c.age != null ? ` (${c.age})` : ''} — <span class="badge">${statusLabel}</span><br>
-    <small>${c.physical_description}${c.clothing_description ? ', ' + c.clothing_description : ''}</small><br>
-    <small>Last seen: ${c.last_seen_area || 'location on map'} — ${c.last_seen_time}</small>
-    ${isOfficer ? `<br><small>Reporter: ${c.reporter_phone} (${c.reporter_relationship || 'relationship not given'})</small>` : ''}
+    ${isOfficer ? `#${Number(c.id)} ` : ''}${esc(c.child_name)}${c.age != null ? ` (${esc(c.age)})` : ''} — <span class="badge">${esc(statusLabel)}</span><br>
+    <small>${esc(c.physical_description)}${c.clothing_description ? ', ' + esc(c.clothing_description) : ''}</small><br>
+    <small>Last seen: ${esc(c.last_seen_area || 'location on map')} — ${esc(c.last_seen_time)}</small>
+    ${isOfficer ? `<br><small>Reporter: ${esc(c.reporter_phone)} (${esc(c.reporter_relationship || 'relationship not given')})</small>` : ''}
     ${actions ? `<br>${actions}` : ''}
   </div>`;
 }

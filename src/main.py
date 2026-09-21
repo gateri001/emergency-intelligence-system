@@ -59,13 +59,34 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Auth is a bearer token in the Authorization header - no cookies anywhere -
+# so credentialed CORS is unnecessary (and wildcard-origin + credentials is a
+# combination worth never having). Public endpoints stay open to any origin.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Cheap, standard hardening on every response: stop MIME sniffing, refuse
+    to be framed (clickjacking on the officer console), don't leak the URL."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if request.url.path.startswith("/dashboard"):
+        # Revalidate on every load (still cheap - ETag/304). Without this the
+        # browser heuristically cached the page, so after a security fix a
+        # visitor could keep running the OLD, vulnerable dashboard: found when
+        # a real browser kept executing an XSS payload the server had already
+        # stopped serving code for.
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 @app.get("/")
