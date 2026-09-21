@@ -46,6 +46,31 @@ KENYA_BBOX = (-4.72, 33.5, 5.03, 41.91)  # lat_min, lon_min, lat_max, lon_max
 MIN_FRP = 10.0  # megawatts - see module docstring
 
 
+def insert_fire_detection(conn, lat, lon, timestamp, description, severity):
+    """Insert one detection with the same confidence/tier logic every other
+    incident goes through (src/confidence.py): a bulk sensor detection starts
+    trusted (0.8 base), and only a citizen/officer report nearby adds a
+    corroboration bonus (adjacent VIIRS pixels from one fire are not
+    independent evidence - see count_nearby_reports' exclude_source).
+
+    scoring_stage='strategic' matters: this script computes the FULL
+    assessment itself, so the row is not a provisional reflex guess.
+    /alert/recommended only surfaces 'strategic' rows (src/main.py), and the
+    DB default is 'reflex' - omitting this once silently stopped every real
+    satellite fire from ever reaching an officer (found by looking at the
+    dashboard in a real browser: every FIRMS row showed 'assessing')."""
+    nearby = count_nearby_reports(conn, lat, lon, "fire", timestamp, exclude_source="bulk")
+    confidence = compute_initial_confidence("bulk", "fire", False, nearby)
+    tier = alert_tier(confidence, "fire")
+    conn.execute(
+        """INSERT INTO incidents
+           (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
+            visibility, has_evidence, confidence_score, corroboration_count, alert_tier, scoring_stage)
+           VALUES ('bulk', 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?, 'strategic')""",
+        (lat, lon, description, severity, timestamp, confidence, tier),
+    )
+
+
 def main():
     init_db()
     conn = get_connection()
@@ -106,17 +131,7 @@ def main():
         # burn). Without this, FIRMS fires silently never reached
         # /alert/recommended no matter how severe - see the comment at the
         # top of this function's caller.
-        nearby = count_nearby_reports(conn, lat, lon, "fire", timestamp, exclude_source="bulk")
-        confidence = compute_initial_confidence("bulk", "fire", False, nearby)
-        tier = alert_tier(confidence, "fire")
-
-        conn.execute(
-            """INSERT INTO incidents
-               (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
-                visibility, has_evidence, confidence_score, corroboration_count, alert_tier)
-               VALUES (?, 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?)""",
-            ("bulk", lat, lon, description, score(lat, lon), timestamp, confidence, tier),
-        )
+        insert_fire_detection(conn, lat, lon, timestamp, description, score(lat, lon))
         inserted += 1
 
     conn.commit()

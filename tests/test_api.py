@@ -390,3 +390,29 @@ def test_broadcasts_count_real_failures_not_attempts(client, officer_token, monk
         "/alert/broadcast", json={"incident_id": inc_id, "message": "Stay alert.", "radius_km": 10}, headers=headers
     ).json()
     assert res2["recipients_reached"] == 0 and res2["failed_count"] == 2
+
+
+def test_firms_detections_reach_officers_recommended_list(client, officer_token):
+    """Regression: /alert/recommended only shows scoring_stage='strategic'
+    rows, and scripts/ingest_firms.py used to insert with the DB default
+    ('reflex'), so real satellite fires silently could never reach an
+    officer. Found by looking at the dashboard in a real browser."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from ingest_firms import insert_fire_detection
+
+    from src.database import get_connection
+
+    conn = get_connection()
+    insert_fire_detection(conn, -0.5, 37.0, "2026-09-21 12:00", "NASA FIRMS test detection", "Low")
+    conn.commit()
+    conn.close()
+
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    recommended = client.get("/alert/recommended", headers=headers).json()
+    fires = [r for r in recommended if r["source"] == "bulk" and r["type"] == "fire"]
+    assert len(fires) == 1
+    assert fires[0]["scoring_stage"] == "strategic"
+    assert fires[0]["alert_tier"] in ("sms_recommended", "critical")
