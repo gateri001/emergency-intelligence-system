@@ -32,7 +32,13 @@ def test_dashboard_escapes_reporter_controlled_text():
     html = INDEX.read_text(encoding="utf-8")
     script = re.search(r"<script>(.*)</script>\s*</body>", html, re.S).group(1)
 
+    consts = [re.search(pattern, script, re.S).group(0) for pattern in (
+        r"const CRIME_TYPES = new Set\(\[.*?\]\);",
+        r"const CATEGORY_COLOR = \{.*?\};",
+    )]
     harness = "\n".join([
+        *consts,
+        _function_source(script, "incidentCategory"),
         _function_source(script, "esc"),
         _function_source(script, "renderIncidentRow"),
         _function_source(script, "renderMissingCase"),

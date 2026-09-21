@@ -567,3 +567,12 @@ def test_heatmap_clamps_to_service_area_and_validates_input(client):
     assert _heatmap(client, size=100).status_code == 422
     assert _heatmap(client, size=2).status_code == 422
     assert _heatmap(client, category="everything").status_code == 422
+
+
+def test_incident_list_limit_is_bounded(client, officer_token):
+    """?limit=1000000 used to dump the whole table on a public endpoint."""
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    assert client.get("/incidents?limit=1000000").status_code == 422
+    assert client.get("/incidents?limit=0").status_code == 422
+    assert client.get("/incidents?limit=500").status_code == 200
+    assert client.get("/incidents/all?limit=501", headers=headers).status_code == 422

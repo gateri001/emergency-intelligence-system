@@ -257,7 +257,7 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
 
 
 @app.get("/incidents", response_model=list[IncidentOut])
-def list_incidents(limit: int = 100):
+def list_incidents(limit: int = Query(100, ge=1, le=500)):
     """
     Public feed. Deliberately excludes visibility='officers_only' reports -
     those exist so a witness to something dangerous (e.g. a crime in
@@ -274,7 +274,7 @@ def list_incidents(limit: int = 100):
 
 
 @app.get("/incidents/all", response_model=list[IncidentOut])
-def list_incidents_all(limit: int = 100, officer: str = Depends(get_current_officer)):
+def list_incidents_all(limit: int = Query(100, ge=1, le=500), officer: str = Depends(get_current_officer)):
     """Officer view: includes officers_only reports. Still never exposes a
     reporter identity, because none is ever collected in the first place."""
     conn = get_connection()

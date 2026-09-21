@@ -19,8 +19,8 @@
   .app { display: flex; height: calc(100vh - 53px); }
   #map { flex: 1 1 60%; min-width: 0; }
   .panel { flex: 1 1 40%; max-width: 440px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border); }
-  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .tab { padding: 11px 14px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }
+  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex-shrink: 0; scrollbar-width: thin; }
+  .tab { padding: 11px 11px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }
   .tab.active { color: var(--text); border-bottom-color: var(--accent); }
   .tab-content { flex: 1; overflow-y: auto; padding: 16px; display: none; }
   .tab-content.active { display: block; }
@@ -74,11 +74,11 @@
   <div class="panel">
     <div class="tabs">
       <div class="tab active" data-tab="report">Report</div>
-      <div class="tab" data-tab="risk">Risk Check</div>
-      <div class="tab" data-tab="route">Safe Route</div>
-      <div class="tab" data-tab="feed">Live Feed</div>
-      <div class="tab" data-tab="data">Open Data</div>
-      <div class="tab" data-tab="missing">Missing Child</div>
+      <div class="tab" data-tab="risk" title="Risk check">Risk</div>
+      <div class="tab" data-tab="route" title="Safe route and nearest medical help">Route</div>
+      <div class="tab" data-tab="feed" title="Live feed and alert sign-up">Feed</div>
+      <div class="tab" data-tab="data" title="Open data: GDACS and UNOSAT">Data</div>
+      <div class="tab" data-tab="missing" title="Missing Child Alert">Missing Child</div>
       <div class="tab" data-tab="officer">Officer</div>
     </div>
 
@@ -153,8 +153,29 @@
 
     <!-- LIVE FEED -->
     <div class="tab-content" id="tab-feed">
-      <h3>Recent Incidents</h3>
-      <div class="hint">Public feed — reports marked "officers only" by their reporter are not shown here.</div>
+      <h3>Get alerts near you</h3>
+      <div class="hint">Get an SMS when an officer confirms a serious incident or a missing child near the location you pick on the map. Your number is used only for alerts in your area, is never shown publicly, and you can re-enter it to move your location.</div>
+      <div class="selected-box" id="selectedPointAlerts">No location selected yet. Click the map, or use your current location on the Report tab.</div>
+      <input id="alertPhone" type="tel" placeholder="Your phone, e.g. 0712 345 678" autocomplete="tel" />
+      <button onclick="subscribeAlerts()">Subscribe to alerts here</button>
+      <div class="result" id="alertResult"></div>
+
+      <h3 style="margin-top:18px;">Recent Incidents</h3>
+      <div class="hint">Public feed — reports marked "officers only" by their reporter are not shown here. Satellite detections are numerous, so they have their own filter.</div>
+      <div style="display:flex;gap:8px;">
+        <select id="feedSource" aria-label="Which reports">
+          <option value="reports">Citizen &amp; officer reports</option>
+          <option value="satellite">Satellite fire detections</option>
+          <option value="all">Everything</option>
+        </select>
+        <select id="feedCategory" aria-label="Category">
+          <option value="">All types</option>
+          <option value="crime">Crime</option>
+          <option value="fire">Fire</option>
+          <option value="flood">Flood</option>
+          <option value="medical">Medical / accident</option>
+        </select>
+      </div>
       <div class="result" id="recentList">Loading…</div>
     </div>
 
@@ -343,6 +364,7 @@ document.querySelectorAll('.tab').forEach(tabEl => {
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
     tabEl.classList.add('active');
     document.getElementById(`tab-${tabEl.dataset.tab}`).classList.add('active');
+    tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // never leave the active tab off-screen
   });
 });
 
@@ -355,7 +377,7 @@ let selectedMarker = null;
 function setSelected(lat, lon) {
   selected = { lat, lon };
   const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-  ['selectedPoint', 'selectedPointRisk', 'selectedPointRoute', 'selectedPointMissing'].forEach(id => {
+  ['selectedPoint', 'selectedPointRisk', 'selectedPointRoute', 'selectedPointMissing', 'selectedPointAlerts'].forEach(id => {
     document.getElementById(id).innerText = label;
   });
   if (selectedMarker) map.removeLayer(selectedMarker);
@@ -492,27 +514,70 @@ function renderIncidentRow(inc) {
   const stageBadge = inc.scoring_stage === 'reflex' ? ' <span class="badge">assessing</span>'
     : inc.scoring_stage === 'failed' ? ' <span class="badge" style="color:var(--red)">assessment failed</span>' : '';
   return `<div class="incident-row">
-    ${esc(inc.type)} — ${esc(inc.area || 'unnamed location')} — <span class="severity-${esc(inc.predicted_severity)}">${esc(severity)}</span>${stageBadge}<br>
-    <small>confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${esc(inc.alert_tier)}">${esc(String(inc.alert_tier).replace('_',' '))}</span> — via ${esc(inc.source)}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
+    <span style="color:${CATEGORY_COLOR[incidentCategory(inc.type)]}">&#9679;</span> ${esc(inc.type)} — ${esc(inc.area || 'unnamed location')} — <span class="severity-${esc(inc.predicted_severity)}">${esc(severity)}</span>${stageBadge}<br>
+    <small>${esc(inc.timestamp)} — confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${esc(inc.alert_tier)}">${esc(String(inc.alert_tier).replace('_',' '))}</span> — via ${esc(inc.source)}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
     <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, true)">Confirm</button>
     <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, false)">Dispute</button>
   </div>`;
 }
 
-async function loadRecent() {
-  const res = await fetch(`${API}/incidents?limit=50`);
-  const data = await res.json();
+// Marker colour by kind of incident, so the map reads at a glance.
+const CRIME_TYPES = new Set(['robbery', 'burglary', 'theft', 'assault', 'vandalism', 'suspicious_activity']);
+function incidentCategory(type) {
+  if (CRIME_TYPES.has(type)) return 'crime';
+  if (type === 'fire') return 'fire';
+  if (type === 'flood') return 'flood';
+  return 'medical'; // accident, medical_emergency
+}
+const CATEGORY_COLOR = { crime: '#f87171', fire: '#fb923c', flood: '#60a5fa', medical: '#c084fc' };
+
+let feedData = [];
+
+// The API returns newest-id-first, and every satellite (FIRMS) run inserts
+// ~150 rows at once, so an unfiltered "recent 50" was almost entirely
+// satellite detections and real citizen/officer reports sank out of view.
+// Fetch more, filter here, and show the first 50 of what remains.
+function renderFeed() {
+  const source = document.getElementById('feedSource').value;
+  const category = document.getElementById('feedCategory').value;
+  const shown = feedData.filter(inc =>
+    (source === 'all' || (source === 'satellite' ? inc.source === 'bulk' : inc.source !== 'bulk')) &&
+    (!category || incidentCategory(inc.type) === category)
+  );
   markers.forEach(m => map.removeLayer(m));
   markers = [];
   const list = document.getElementById('recentList');
-  list.innerHTML = data.length ? data.map(renderIncidentRow).join('') : 'No incidents yet.';
-  data.forEach(inc => {
+  list.innerHTML = shown.length ? shown.slice(0, 50).map(renderIncidentRow).join('') : 'Nothing matches this filter right now.';
+  shown.forEach(inc => {
     if (inc.latitude && inc.longitude) {
-      const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color: '#f87171' })
+      const color = CATEGORY_COLOR[incidentCategory(inc.type)];
+      const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color, fillColor: color, fillOpacity: 0.6, weight: 1 })
         .addTo(map).bindPopup(`${esc(inc.type)} (${esc(inc.predicted_severity)}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
       markers.push(m);
     }
   });
+}
+
+async function loadRecent() {
+  const res = await fetch(`${API}/incidents?limit=300`);
+  if (!res.ok) return;
+  feedData = await res.json();
+  renderFeed();
+}
+
+async function subscribeAlerts() {
+  const el = document.getElementById('alertResult');
+  if (!requireSelected('alertResult')) return;
+  const phone = document.getElementById('alertPhone').value.trim();
+  if (!phone) { el.innerText = 'Enter your phone number first.'; return; }
+  const res = await fetch(`${API}/subscribers`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ phone_number: phone, latitude: selected.lat, longitude: selected.lon })
+  });
+  const data = await res.json();
+  el.innerText = res.ok
+    ? (data.status === 'updated' ? 'Done — your alert location was updated.' : 'Subscribed. You will get an SMS for confirmed serious incidents near this spot.')
+    : errMsg(data, 'Could not subscribe');
 }
 
 async function voteIncident(id, confirm) {
@@ -751,7 +816,14 @@ loadExternalEvents();
 loadFloodExtents();
 loadStructuresSummary();
 loadMissingPublic();
+document.getElementById('feedSource').addEventListener('change', renderFeed);
+document.getElementById('feedCategory').addEventListener('change', renderFeed);
 setInterval(loadRecent, 15000);
+// Officer views used to go stale until a manual reload.
+setInterval(() => {
+  if (!officerToken) return;
+  loadRecommended(); loadAllIncidents(); loadMissingOfficer();
+}, 20000);
 </script>
 </body>
 </html>
