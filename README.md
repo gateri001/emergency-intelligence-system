@@ -4,8 +4,9 @@ Multi-hazard emergency intelligence for Kenya — crime, flood, fire, and
 medical incidents, reported by citizens and officers, scored for risk, and
 shown on a live map. Built by [Triagia](https://github.com/gateri001).
 
-See `docs/architecture.md` for how it fits together and `docs/privacy_policy.md`
-for how data is handled.
+New here? Start with `docs/how-it-works.md` (plain language, no programming
+needed). See `docs/architecture.md` for the technical reasoning and
+`docs/privacy_policy.md` for how data is handled.
 
 ## Run it locally
 
