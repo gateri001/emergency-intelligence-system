@@ -29,7 +29,8 @@ def init_db():
             confidence_score REAL NOT NULL DEFAULT 0.0,
             corroboration_count INTEGER NOT NULL DEFAULT 0,
             alert_tier TEXT NOT NULL DEFAULT 'in_app',
-            scoring_stage TEXT NOT NULL DEFAULT 'reflex' CHECK(scoring_stage IN ('reflex', 'strategic', 'failed'))
+            scoring_stage TEXT NOT NULL DEFAULT 'reflex' CHECK(scoring_stage IN ('reflex', 'strategic', 'failed')),
+            magnitude REAL
         )
     """)
     # Migration for databases created before visibility/confidence scoring
@@ -42,6 +43,7 @@ def init_db():
         "corroboration_count INTEGER NOT NULL DEFAULT 0",
         "alert_tier TEXT NOT NULL DEFAULT 'in_app'",
         "scoring_stage TEXT NOT NULL DEFAULT 'reflex'",
+        "magnitude REAL",  # sensor magnitude, e.g. fire radiative power (MW) for satellite fires
     ):
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")

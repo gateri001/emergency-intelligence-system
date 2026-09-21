@@ -30,7 +30,7 @@ import shapefile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.confidence import alert_tier, compute_initial_confidence, count_nearby_reports
+from src.confidence import compute_initial_confidence, count_nearby_reports, fire_detection_tier
 from src.database import get_connection, init_db
 from src.risk_surface import build_risk_grid, severity_bucket
 
@@ -46,12 +46,18 @@ KENYA_BBOX = (-4.72, 33.5, 5.03, 41.91)  # lat_min, lon_min, lat_max, lon_max
 MIN_FRP = 10.0  # megawatts - see module docstring
 
 
-def insert_fire_detection(conn, lat, lon, timestamp, description, severity):
-    """Insert one detection with the same confidence/tier logic every other
-    incident goes through (src/confidence.py): a bulk sensor detection starts
-    trusted (0.8 base), and only a citizen/officer report nearby adds a
-    corroboration bonus (adjacent VIIRS pixels from one fire are not
-    independent evidence - see count_nearby_reports' exclude_source).
+def insert_fire_detection(conn, lat, lon, timestamp, description, severity, frp):
+    """Insert one detection. Confidence is the shared logic (src/confidence.py):
+    a satellite hit starts trusted (0.8 - "is it real"), and only a
+    citizen/officer report nearby adds a corroboration bonus (adjacent VIIRS
+    pixels from one fire are not independent evidence - see
+    count_nearby_reports' exclude_source).
+
+    The TIER is not derived from that confidence: 0.8 is above the hazard
+    critical threshold, so every detection used to be `critical`. Urgency comes
+    from the fire's radiative power `frp` (MW), see fire_detection_tier() and
+    its caveats; a human report nearby bumps it one level. FRP is stored in
+    incidents.magnitude so later logic (votes) can keep tiering consistently.
 
     scoring_stage='strategic' matters: this script computes the FULL
     assessment itself, so the row is not a provisional reflex guess.
@@ -61,13 +67,13 @@ def insert_fire_detection(conn, lat, lon, timestamp, description, severity):
     dashboard in a real browser: every FIRMS row showed 'assessing')."""
     nearby = count_nearby_reports(conn, lat, lon, "fire", timestamp, exclude_source="bulk")
     confidence = compute_initial_confidence("bulk", "fire", False, nearby)
-    tier = alert_tier(confidence, "fire")
+    tier = fire_detection_tier(float(frp), corroborated=nearby > 0)
     conn.execute(
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
-            visibility, has_evidence, confidence_score, corroboration_count, alert_tier, scoring_stage)
-           VALUES ('bulk', 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?, 'strategic')""",
-        (lat, lon, description, severity, timestamp, confidence, tier),
+            visibility, has_evidence, confidence_score, corroboration_count, alert_tier, scoring_stage, magnitude)
+           VALUES ('bulk', 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?, 'strategic', ?)""",
+        (lat, lon, description, severity, timestamp, confidence, tier, float(frp)),
     )
 
 
@@ -131,7 +137,7 @@ def main():
         # burn). Without this, FIRMS fires silently never reached
         # /alert/recommended no matter how severe - see the comment at the
         # top of this function's caller.
-        insert_fire_detection(conn, lat, lon, timestamp, description, score(lat, lon))
+        insert_fire_detection(conn, lat, lon, timestamp, description, score(lat, lon), rec["FRP"])
         inserted += 1
 
     conn.commit()

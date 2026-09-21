@@ -193,6 +193,7 @@ class IncidentOut(BaseModel):
     corroboration_count: int = 0
     alert_tier: str = "in_app"
     scoring_stage: str = "reflex"
+    magnitude: float | None = None  # fire radiative power (MW) for satellite detections
 
 
 class VoteRequest(BaseModel):

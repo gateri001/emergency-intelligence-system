@@ -515,7 +515,7 @@ function renderIncidentRow(inc) {
     : inc.scoring_stage === 'failed' ? ' <span class="badge" style="color:var(--red)">assessment failed</span>' : '';
   return `<div class="incident-row">
     <span style="color:${CATEGORY_COLOR[incidentCategory(inc.type)]}">&#9679;</span> ${esc(inc.type)} — ${esc(inc.area || 'unnamed location')} — <span class="severity-${esc(inc.predicted_severity)}">${esc(severity)}</span>${stageBadge}<br>
-    <small>${esc(inc.timestamp)} — confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${esc(inc.alert_tier)}">${esc(String(inc.alert_tier).replace('_',' '))}</span> — via ${esc(inc.source)}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
+    <small>${esc(inc.timestamp)}${inc.magnitude != null ? ' — ' + esc(inc.magnitude) + ' MW' : ''} — confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${esc(inc.alert_tier)}">${esc(String(inc.alert_tier).replace('_',' '))}</span> — via ${esc(inc.source)}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
     <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, true)">Confirm</button>
     <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, false)">Dispute</button>
   </div>`;

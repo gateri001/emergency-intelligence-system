@@ -14,7 +14,7 @@ from slowapi.util import get_remote_address
 
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.broadcast import get_provider, phone_key, select_targets, send_all
-from src.confidence import alert_tier, apply_vote, is_within_known_flood_zone
+from src.confidence import alert_tier, apply_vote, fire_detection_tier, is_within_known_flood_zone
 from src.database import get_connection, init_db
 from src.geo import haversine_km
 from src.reflex import reflex_assessment
@@ -243,8 +243,14 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
         raise HTTPException(status_code=404, detail="Incident not found")
 
     new_confidence = apply_vote(row["confidence_score"], row["type"], vote.confirm)
-    new_tier = alert_tier(new_confidence, row["type"])
     new_corroboration = row["corroboration_count"] + (1 if vote.confirm else 0)
+    if row["source"] == "bulk" and row["type"] == "fire" and row["magnitude"] is not None:
+        # A satellite fire's tier is its urgency (radiative power), not its
+        # confidence (always high): deriving it from confidence here would let
+        # one confirm vote jump a weak 10 MW detection straight to critical.
+        new_tier = fire_detection_tier(row["magnitude"], corroborated=new_corroboration > 0)
+    else:
+        new_tier = alert_tier(new_confidence, row["type"])
 
     conn.execute(
         "UPDATE incidents SET confidence_score = ?, alert_tier = ?, corroboration_count = ? WHERE id = ?",

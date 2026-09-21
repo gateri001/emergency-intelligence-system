@@ -61,6 +61,32 @@ NEARBY_RADIUS_KM = 2.0
 NEARBY_WINDOW_HOURS = 6.0
 
 
+# Satellite fire urgency. Confidence answers "is this real" (0.8 for a satellite
+# hit, always); URGENCY is a separate question, so a satellite fire's tier comes
+# from its fire radiative power (MW), not from confidence - otherwise every one
+# of ~150 detections a day was `critical`. These two numbers are JUDGEMENT
+# CALLS, not validated against ground truth (typical savanna / agricultural-burn
+# pixels are ~10-50 MW; big wildfire pixels 100+): tune with real feedback.
+# Not modelled, and worth more than either number: proximity to people.
+FIRE_FRP_SMS_MW = 25.0
+FIRE_FRP_CRITICAL_MW = 100.0
+_TIER_ORDER = ["in_app", "sms_recommended", "critical"]
+
+
+def fire_detection_tier(frp_mw: float, corroborated: bool) -> str:
+    """Tier for a satellite fire detection from its radiative power; a human
+    report of fire nearby (or a confirm vote) bumps it up one level."""
+    if frp_mw >= FIRE_FRP_CRITICAL_MW:
+        level = 2
+    elif frp_mw >= FIRE_FRP_SMS_MW:
+        level = 1
+    else:
+        level = 0
+    if corroborated:
+        level = min(level + 1, 2)
+    return _TIER_ORDER[level]
+
+
 def category_for(incident_type: str) -> str:
     return TYPE_CATEGORY.get(incident_type, "hazard")
 

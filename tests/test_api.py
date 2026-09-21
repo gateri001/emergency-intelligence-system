@@ -406,7 +406,7 @@ def test_firms_detections_reach_officers_recommended_list(client, officer_token)
     from src.database import get_connection
 
     conn = get_connection()
-    insert_fire_detection(conn, -0.5, 37.0, "2026-09-21 12:00", "NASA FIRMS test detection", "Low")
+    insert_fire_detection(conn, -0.5, 37.0, "2026-09-21 12:00", "NASA FIRMS test detection", "Low", frp=150.0)
     conn.commit()
     conn.close()
 
@@ -576,3 +576,74 @@ def test_incident_list_limit_is_bounded(client, officer_token):
     assert client.get("/incidents?limit=0").status_code == 422
     assert client.get("/incidents?limit=500").status_code == 200
     assert client.get("/incidents/all?limit=501", headers=headers).status_code == 422
+
+
+# --- Satellite fire urgency from radiative power ---------------------------------
+
+def _fires_by_source(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    return client.get("/incidents/all?limit=500", headers=headers).json()
+
+
+def _insert_fire(frp, lat=-0.5, lon=37.0):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from ingest_firms import insert_fire_detection
+
+    from src.database import get_connection
+
+    conn = get_connection()
+    insert_fire_detection(conn, lat, lon, "2026-09-21 12:00", f"FIRMS test FRP={frp}", "Low", frp=frp)
+    conn.commit()
+    conn.close()
+
+
+def test_fire_detection_tier_bands_and_corroboration_bump():
+    from src.confidence import fire_detection_tier
+
+    assert fire_detection_tier(10.0, False) == "in_app"
+    assert fire_detection_tier(24.9, False) == "in_app"
+    assert fire_detection_tier(25.0, False) == "sms_recommended"
+    assert fire_detection_tier(99.9, False) == "sms_recommended"
+    assert fire_detection_tier(100.0, False) == "critical"
+    # a human report nearby bumps one level, capped at critical
+    assert fire_detection_tier(10.0, True) == "sms_recommended"
+    assert fire_detection_tier(50.0, True) == "critical"
+    assert fire_detection_tier(500.0, True) == "critical"
+
+
+def test_satellite_fires_are_ranked_by_power_not_all_critical(client, officer_token):
+    _insert_fire(12.0, lat=-0.5)     # weak
+    _insert_fire(60.0, lat=-1.5)     # medium
+    _insert_fire(220.0, lat=-2.5)    # large
+    fires = {f["magnitude"]: f for f in _fires_by_source(client, officer_token) if f["source"] == "bulk"}
+    assert fires[12.0]["alert_tier"] == "in_app"
+    assert fires[60.0]["alert_tier"] == "sms_recommended"
+    assert fires[220.0]["alert_tier"] == "critical"
+    # confidence (is it real) is unchanged and high for all of them
+    assert all(f["confidence_score"] == 0.8 for f in fires.values())
+
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    recommended = {f["magnitude"] for f in client.get("/alert/recommended", headers=headers).json()}
+    assert recommended == {60.0, 220.0}  # the 12 MW detection is visible on the map but not recommended
+
+
+def test_confirm_vote_keeps_satellite_fire_on_its_power_based_tier(client, officer_token):
+    _insert_fire(12.0)
+    fire = next(f for f in _fires_by_source(client, officer_token) if f["source"] == "bulk")
+    assert fire["alert_tier"] == "in_app"
+
+    voted = client.post(f"/report/{fire['id']}/vote", json={"confirm": True}).json()
+    # a confirm is corroboration: one level up (sms_recommended), NOT the critical that
+    # deriving the tier from confidence (0.8 + 0.15) would have produced
+    assert voted["alert_tier"] == "sms_recommended"
+    assert voted["magnitude"] == 12.0
+
+
+def test_citizen_report_nearby_bumps_a_satellite_fire(client, officer_token):
+    _report(client, type="fire", latitude=-0.5, longitude=37.0, timestamp="2026-09-21 12:30")
+    _insert_fire(12.0, lat=-0.5, lon=37.0)
+    fire = next(f for f in _fires_by_source(client, officer_token) if f["source"] == "bulk")
+    assert fire["alert_tier"] == "sms_recommended"  # 12 MW would be in_app without the human report
