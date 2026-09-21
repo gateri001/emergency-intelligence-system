@@ -525,3 +525,45 @@ def test_missing_child_report_validation(client):
     conn = get_connection()
     assert conn.execute("SELECT reporter_phone FROM missing_child_cases").fetchone()["reporter_phone"] == "+254700000000"
     conn.close()
+
+
+# --- Risk heatmap --------------------------------------------------------------
+
+def _heatmap(client, **params):
+    q = {"lat_min": -1.5, "lon_min": 36.6, "lat_max": -1.0, "lon_max": 37.1, "size": 12}
+    q.update(params)
+    return client.get("/risk/heatmap", params=q)
+
+
+def test_heatmap_cell_values_equal_point_risk_at_the_cell_centre(client):
+    """The whole point of not reusing build_risk_grid: a cell's colour must
+    mean the same as /predict there, at any zoom."""
+    from src.risk_surface import point_risk
+
+    res = _heatmap(client, category="crime")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["cells"], "the synthetic baseline should put some risk around Nairobi"
+    for cell in body["cells"]:
+        expected, _ = point_risk(cell["lat"], cell["lon"], "robbery")  # robbery -> crime
+        assert abs(cell["risk"] - expected) < 1e-3, cell
+        assert 0.05 <= cell["risk"] <= 1.0
+    assert body["category"] == "crime"
+    assert abs(body["cell_lat_deg"] - 0.5 / 12) < 1e-9
+
+
+def test_heatmap_is_comparable_across_viewports(client):
+    """A tiny box around a quiet area must NOT be renormalised to look red."""
+    wide = {(round(c["lat"], 2), round(c["lon"], 2)): c["risk"] for c in _heatmap(client, size=30).json()["cells"]}
+    quiet = _heatmap(client, lat_min=-4.4, lon_min=39.0, lat_max=-4.3, lon_max=39.1, size=10).json()["cells"]
+    assert all(c["risk"] < 0.5 for c in quiet)
+    assert max(wide.values()) > 0.3  # sanity: the busy Nairobi box does have real hotspots
+
+
+def test_heatmap_clamps_to_service_area_and_validates_input(client):
+    assert _heatmap(client, lat_min=45, lat_max=48, lon_min=2, lon_max=5).json()["cells"] == []  # Europe
+    assert _heatmap(client, lat_min=-30, lat_max=30, lon_min=10, lon_max=60).status_code == 200  # clamped, not rejected
+    assert _heatmap(client, lat_min=-1.0, lat_max=-1.5).status_code == 400
+    assert _heatmap(client, size=100).status_code == 422
+    assert _heatmap(client, size=2).status_code == 422
+    assert _heatmap(client, category="everything").status_code == 422

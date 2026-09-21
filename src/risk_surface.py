@@ -238,3 +238,45 @@ def point_risk(lat: float, lon: float, incident_type: str | None = None,
 
     value = min(raw_value / max_value, 1.0)
     return value, severity_bucket(value)
+
+
+def risk_cells(lat_min: float, lon_min: float, lat_max: float, lon_max: float,
+               category: str | None = None, size: int = 40, min_risk: float = 0.05,
+               half_life_days: float = 30.0, spatial_bandwidth_km: float = 6.0):
+    """Risk for a size x size grid of cell centres inside a box, as a sparse
+    list of {lat, lon, risk} (cells below min_risk are dropped) - the data
+    behind the dashboard's risk-surface layer.
+
+    Deliberately NOT built on build_risk_grid(): that normalises by the
+    maximum inside the requested box, so every viewport would show a red
+    hotspot even where nothing has happened. This uses the same normaliser as
+    point_risk() (the maximum over ALL points), so a cell's value equals
+    point_risk() at its centre and colours mean the same thing at every zoom
+    and pan. tests/test_api.py asserts that equality."""
+    points = _load_points(category)
+    if len(points) == 0:
+        return []
+    weighted = points[:, 2] * np.exp(-(np.log(2) / half_life_days) * points[:, 3])
+    max_value = _max_kernel_value(points, weighted, spatial_bandwidth_km)
+    if max_value <= 0:
+        return []
+
+    lat_c = lat_min + (np.arange(size) + 0.5) * (lat_max - lat_min) / size
+    lon_c = lon_min + (np.arange(size) + 0.5) * (lon_max - lon_min) / size
+    grid_lat, grid_lon = np.meshgrid(lat_c, lon_c, indexing="ij")
+    flat_lat, flat_lon = grid_lat.ravel(), grid_lon.ravel()
+
+    raw = np.empty(flat_lat.shape)
+    chunk = 256
+    for i in range(0, len(flat_lat), chunk):
+        dlat = (flat_lat[i:i + chunk, None] - points[None, :, 0]) * KM_PER_DEG_LAT
+        dlon = (flat_lon[i:i + chunk, None] - points[None, :, 1]) * KM_PER_DEG_LON
+        kernel = np.exp(-0.5 * (np.sqrt(dlat ** 2 + dlon ** 2) / spatial_bandwidth_km) ** 2)
+        raw[i:i + chunk] = (kernel * weighted[None, :]).sum(axis=1)
+
+    risk = np.minimum(raw / max_value, 1.0)
+    keep = risk >= min_risk
+    return [
+        {"lat": float(a), "lon": float(b), "risk": round(float(r), 3)}
+        for a, b, r in zip(flat_lat[keep], flat_lon[keep], risk[keep])
+    ]

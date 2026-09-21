@@ -278,6 +278,19 @@ class MissingChildBroadcastResponse(BaseModel):
     message: str
 
 
+class RiskCell(BaseModel):
+    lat: float
+    lon: float
+    risk: float
+
+
+class RiskHeatmapResponse(BaseModel):
+    cells: list[RiskCell]
+    cell_lat_deg: float
+    cell_lon_deg: float
+    category: str | None = None
+
+
 class HealthFacilityOut(BaseModel):
     id: int
     name: str

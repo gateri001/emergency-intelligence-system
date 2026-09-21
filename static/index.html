@@ -48,6 +48,12 @@
   .selected-box { padding: 8px 9px; border-radius: 6px; background: var(--panel2); border: 1px solid var(--border); font-size: 13px; margin-bottom: 10px; }
   .logged-in-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; }
   .logged-in-bar button { width: auto; margin: 0; padding: 6px 10px; font-size: 12px; }
+  .risk-control { background: rgba(17,24,39,.92); color: var(--text); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); font-size: 12.5px; line-height: 1.5; }
+  .risk-control label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; }
+  .risk-control input[type=checkbox] { width: auto; }
+  .risk-control select { width: 100%; margin-top: 4px; padding: 4px 6px; font-size: 12px; }
+  .risk-legend { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+  .risk-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; }
   @media (max-width: 800px) {
     .app { flex-direction: column; height: auto; }
     #map { height: 42vh; flex: none; }
@@ -239,6 +245,61 @@
 const API = window.location.origin;
 const map = L.map('map').setView([-1.286389, 36.817223], 11);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+// -------------------------------------------------------------------
+// Risk surface layer: the model's actual output drawn on the map. Values come
+// from /risk/heatmap, which uses the same normaliser as /predict, so a colour
+// means the same thing at every zoom/pan (see risk_surface.risk_cells).
+// -------------------------------------------------------------------
+const riskLayer = L.layerGroup().addTo(map);
+let riskEnabled = false, riskTimer = null, riskRequestId = 0;
+
+const RiskControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd() {
+    const div = L.DomUtil.create('div', 'risk-control');
+    div.innerHTML = `<label><input type="checkbox" class="risk-toggle"> Risk surface</label>
+      <select class="risk-category">
+        <option value="">All hazards</option>
+        <option value="crime">Crime</option>
+        <option value="hazard">Flood / fire</option>
+        <option value="medical">Medical / accidents</option>
+      </select>
+      <div class="risk-legend"><i style="background:#34d399"></i>Low <i style="background:#fbbf24"></i>Medium <i style="background:#f87171"></i>High</div>`;
+    L.DomEvent.disableClickPropagation(div);
+    div.querySelector('.risk-toggle').addEventListener('change', (e) => { riskEnabled = e.target.checked; refreshRiskLayer(); });
+    div.querySelector('.risk-category').addEventListener('change', () => refreshRiskLayer());
+    return div;
+  },
+});
+map.addControl(new RiskControl());
+
+async function refreshRiskLayer() {
+  const myRequest = ++riskRequestId;
+  if (!riskEnabled) { riskLayer.clearLayers(); return; }
+  const b = map.getBounds();
+  const params = new URLSearchParams({
+    lat_min: b.getSouth(), lon_min: b.getWest(), lat_max: b.getNorth(), lon_max: b.getEast(), size: 40,
+  });
+  const category = document.querySelector('.risk-category').value;
+  if (category) params.set('category', category);
+  let data;
+  try {
+    const res = await fetch(`${API}/risk/heatmap?${params}`);
+    if (!res.ok) return;
+    data = await res.json();
+  } catch (e) { return; }
+  if (myRequest !== riskRequestId) return; // a newer pan/zoom already superseded this one
+  riskLayer.clearLayers();
+  data.cells.forEach(c => {
+    const color = c.risk >= 0.66 ? '#f87171' : c.risk >= 0.33 ? '#fbbf24' : '#34d399';
+    L.rectangle(
+      [[c.lat - data.cell_lat_deg / 2, c.lon - data.cell_lon_deg / 2], [c.lat + data.cell_lat_deg / 2, c.lon + data.cell_lon_deg / 2]],
+      { stroke: false, fillColor: color, fillOpacity: 0.12 + 0.45 * c.risk, interactive: false }
+    ).addTo(riskLayer);
+  });
+}
+map.on('moveend', () => { clearTimeout(riskTimer); riskTimer = setTimeout(refreshRiskLayer, 400); });
 
 // SECURITY: every value that came from the API (reporters control many of
 // them, and public endpoints accept anything) must go through esc() before

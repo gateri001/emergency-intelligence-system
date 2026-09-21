@@ -2,7 +2,9 @@ import json
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from typing import Literal
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +18,7 @@ from src.confidence import alert_tier, apply_vote, is_within_known_flood_zone
 from src.database import get_connection, init_db
 from src.geo import haversine_km
 from src.reflex import reflex_assessment
-from src.risk_surface import point_risk
+from src.risk_surface import point_risk, risk_cells
 from src.routing import find_safe_route
 from src.strategic import refine_incident
 from src.schemas import (
@@ -35,9 +37,11 @@ from src.schemas import (
     MissingChildStatusUpdate,
     PredictionRequest,
     PredictionResponse,
+    RiskHeatmapResponse,
     SafeRouteRequest,
     SafeRouteResponse,
     SubscriberIn,
+    SERVICE_AREA,
     VoteRequest,
 )
 
@@ -420,6 +424,41 @@ def list_broadcasts(officer: str = Depends(get_current_officer)):
     rows = conn.execute("SELECT * FROM broadcasts ORDER BY id DESC LIMIT 50").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# -------------------------------------------------------------------
+# Risk surface layer - the model's actual output, as data the map can draw
+# -------------------------------------------------------------------
+
+MAX_HEATMAP_SPAN_DEG = 12.0
+
+
+@app.get("/risk/heatmap", response_model=RiskHeatmapResponse)
+@limiter.limit("30/minute")
+def risk_heatmap(request: Request, lat_min: float, lon_min: float, lat_max: float, lon_max: float,
+                 category: Literal["crime", "hazard", "medical"] | None = None,
+                 size: int = Query(40, ge=5, le=60)):
+    """Risk for a size x size grid over the requested box (the dashboard's
+    map viewport). The box is CLAMPED to the service area rather than
+    rejected - people pan past Kenya's border and shouldn't get an error - and
+    a box entirely outside it just returns no cells. Values match
+    /predict at each cell's centre (same normaliser; see
+    risk_surface.risk_cells for why build_risk_grid isn't used)."""
+    if not (lat_min < lat_max and lon_min < lon_max):
+        raise HTTPException(status_code=400, detail="lat_min/lon_min must be smaller than lat_max/lon_max")
+    s_lat_min, s_lon_min, s_lat_max, s_lon_max = SERVICE_AREA
+    lat_min, lat_max = max(lat_min, s_lat_min), min(lat_max, s_lat_max)
+    lon_min, lon_max = max(lon_min, s_lon_min), min(lon_max, s_lon_max)
+    if lat_min >= lat_max or lon_min >= lon_max:
+        return RiskHeatmapResponse(cells=[], cell_lat_deg=0.0, cell_lon_deg=0.0, category=category)
+    if (lat_max - lat_min) > MAX_HEATMAP_SPAN_DEG or (lon_max - lon_min) > MAX_HEATMAP_SPAN_DEG:
+        raise HTTPException(status_code=400, detail=f"area too large; keep each side under {MAX_HEATMAP_SPAN_DEG} degrees")
+
+    cells = risk_cells(lat_min, lon_min, lat_max, lon_max, category=category, size=size)
+    return RiskHeatmapResponse(
+        cells=cells, cell_lat_deg=(lat_max - lat_min) / size, cell_lon_deg=(lon_max - lon_min) / size,
+        category=category,
+    )
 
 
 # -------------------------------------------------------------------
