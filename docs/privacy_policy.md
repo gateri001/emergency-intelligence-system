@@ -44,6 +44,13 @@ The same is true of confirming or disputing someone else's report
   minor's data under the Data Protection Act. A case resolved as
   `found_deceased` or `closed_false_report` is never exposed publicly
   either, only to officers - see `architecture.md` for the full reasoning.
+  When an officer broadcasts a verified case by SMS, the message is built only
+  from the public fields, and the system refuses any message containing the
+  reporter's phone number.
+
+  Subscriber phone numbers are stored in one normalised form (`+254...`);
+  subscribing again with the same number updates the location rather than
+  creating a second record.
 
 ## Storage
 

@@ -196,12 +196,19 @@ by this. (2) `count_nearby_reports()` takes an `exclude_source` param used
 here to stop adjacent VIIRS pixels from the same fire (a real fire lights
 up several nearby sensor pixels in one pass) from counting as independent
 corroboration against each other - only a citizen/officer report nearby
-adds a corroboration bonus to a bulk detection. Known limitation, not yet
-solved: every FIRMS detection that survives the significance filter lands
-in `critical` tier, since sensor confidence (0.8) exceeds the hazard
-critical threshold (0.6) regardless of the fire's actual scale - FRP
-(radiative power, already present in the raw data) could differentiate a
-borderline 10MW detection from a 200MW blaze, but isn't used for that yet.
+adds a corroboration bonus to a bulk detection.
+
+*Update (overhaul branch):* the old limitation - every detection landing in
+`critical`, because sensor confidence (0.8) exceeds the hazard critical
+threshold (0.6) whatever the fire's size - is addressed. Confidence keeps
+meaning "is it real"; a satellite fire's **tier** now comes from its fire
+radiative power, stored in `incidents.magnitude`: under 25 MW `in_app`, 25-100
+`sms_recommended`, 100+ `critical`, one level up if a citizen/officer report of
+fire is nearby or someone confirms it (`confidence.fire_detection_tier`). On a
+real day (149 detections) that took the recommended list from 149 to 33. The
+25/100 MW thresholds are **judgement calls, not validated** (constants in
+`src/confidence.py`). Still not modelled, and probably worth more than either
+number: proximity to people and buildings.
 
 **Crime pipeline specifics**: auditing this against the actual scenario it
 was built for (a witness reporting a crime in progress, needing to reach
@@ -321,6 +328,57 @@ investigation, not a passive risk signal - officers need to be able to
 follow up with whoever reported it. It is never exposed on
 `/missing-child/cases`, only on the officer-authenticated
 `/missing-child/cases/all`.
+
+## Hardening and features added in the overhaul session (2026-09-21)
+
+Each item was found by testing against the running system, and most are covered
+by a regression test (48 tests).
+
+- **Missing Child Alert can now reach people.** `POST /missing-child/cases/{id}/broadcast`
+  (officer-only, *verified cases only*) geo-targets subscribers around the
+  last-seen point; `GET .../broadcast-preview` shows the exact message and
+  audience first. The default message is composed from public fields only and
+  any message containing the reporter's phone number, in any format, is
+  refused. Logged in `missing_child_broadcasts` (its own table:
+  `broadcasts.incident_id` is NOT NULL and references `incidents`).
+- **Broadcasts count what really went out.** `broadcast.select_targets` sends
+  once per person (numbers are compared by their last 9 digits, so
+  `0712 345 678` and `+254712345678` are one person) and `send_all` counts the
+  provider's reported successes. Before, `recipients_reached` was
+  `len(targets)` even when the SMS gateway failed every send.
+- **Stored XSS fixed.** The dashboard put reporter-controlled text into
+  `innerHTML` unescaped, so a public report could run script in an officer's
+  browser (where the login token is). Everything API-derived now goes through
+  `esc()`; `tests/test_frontend_escaping.py` runs the page's real render
+  functions in Node against hostile input. Also: `X-Content-Type-Options`,
+  `X-Frame-Options: DENY`, `Referrer-Policy`, CORS without credentials, and
+  `Cache-Control: no-cache` on the dashboard (a browser kept running the old,
+  vulnerable page from cache). A strict CSP is *not* done - it needs the inline
+  script moved to a file and Leaflet self-hosted.
+- **Input validation** (`src/schemas.py`): coordinates inside Kenya's bounding
+  box + 1 degree, `YYYY-MM-DD HH:MM` timestamps not >24h in the future, incident
+  type must be a known type (unknown types used to get hazard trust), phone
+  numbers normalised to `+254...`, length limits, bulk max 500, and
+  `POST /subscribers` upserts by phone. `?limit=` on the incident lists is
+  bounded 1..500.
+- **Speed.** Profiling showed `point_risk()`'s cost was re-reading and
+  date-parsing the synthetic CSV on every call, not the maths. The parsed CSV
+  is cached (invalidated on file change) and the normaliser is vectorised:
+  `_load_points` 41-146 ms to ~2 ms, `point_risk('flood')` ~61 to ~14 ms,
+  numerically identical (an oracle test keeps the original implementation).
+- **Risk surface layer.** `GET /risk/heatmap` + a map toggle. Deliberately not
+  built on `build_risk_grid` (which normalises to the max *inside the box*, so
+  every viewport would look red): it uses `point_risk`'s normaliser, so colours
+  mean the same at every zoom. The visible blob is centred on Nairobi because
+  the synthetic baseline is - it demonstrates the model, not real risk.
+- **Regression fixed:** when `/alert/recommended` began requiring
+  `scoring_stage='strategic'`, `ingest_firms.py` kept inserting `reflex` rows, so
+  real satellite fires could not reach officers again. Caught by looking at the
+  dashboard in a real browser, not by the (green) test suite.
+- **Dashboard UX.** Reports are no longer buried by ~150 satellite detections
+  (feed filter), a "Get alerts near you" sign-up card (the broadcast system had
+  no on-ramp for real people), tabs fit, markers coloured by type, officer
+  lists auto-refresh, readable validation errors.
 
 ## Explicitly not yet built
 
