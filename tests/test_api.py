@@ -428,3 +428,100 @@ def test_security_headers_present_on_api_and_static_responses(client):
 
 def test_dashboard_is_revalidated_not_heuristically_cached(client):
     assert client.get("/dashboard/").headers["cache-control"] == "no-cache"
+
+
+# --- Input validation ----------------------------------------------------------
+
+def _incident_body(**overrides):
+    body = {"type": "flood", "latitude": -1.19, "longitude": 36.90, "timestamp": "2026-09-12 10:00"}
+    body.update(overrides)
+    return body
+
+
+def test_incident_rejects_coordinates_outside_service_area(client):
+    for lat, lon in ((0.0, 0.0), (48.85, 2.35), (91, 36.8), (-1.28, 181), (-1.28, 60.0)):
+        res = client.post("/report/citizen", json=_incident_body(latitude=lat, longitude=lon))
+        assert res.status_code == 422, (lat, lon)
+
+
+def test_incident_rejects_malformed_and_far_future_timestamps(client):
+    for bad in ("yesterday", "2026-09-12", "12/09/2026 10:00", "2026-09-12T10:00", "", "2026-13-45 99:99"):
+        assert client.post("/report/citizen", json=_incident_body(timestamp=bad)).status_code == 422, bad
+    assert client.post("/report/citizen", json=_incident_body(timestamp="2099-01-01 10:00")).status_code == 422
+    # past dates stay valid (officer back-fills)
+    assert client.post("/report/citizen", json=_incident_body(timestamp="2020-01-01 10:00")).status_code == 200
+
+
+def test_incident_type_must_be_known_and_is_normalised(client):
+    assert client.post("/report/citizen", json=_incident_body(type="totally-made-up")).status_code == 422
+    assert client.post("/report/citizen", json=_incident_body(type="<img onerror=x>")).status_code == 422
+    assert client.post("/report/citizen", json=_incident_body(type="  FLOOD ")).status_code == 200
+    stored = client.get("/incidents").json()[0]
+    assert stored["type"] == "flood"
+
+
+def test_free_text_and_bulk_size_limits(client, officer_token):
+    assert client.post("/report/citizen", json=_incident_body(description="x" * 1001)).status_code == 422
+    assert client.post("/report/citizen", json=_incident_body(area="x" * 201)).status_code == 422
+    too_many = {"officer_id": "o", "reports": [_incident_body()] * 501}
+    res = client.post("/report/bulk", json=too_many, headers={"Authorization": f"Bearer {officer_token}"})
+    assert res.status_code == 422
+
+
+def test_phone_numbers_are_normalised_or_rejected(client):
+    good = {
+        "+254712345678": "+254712345678",
+        "0712 345 678": "+254712345678",
+        "254712345678": "+254712345678",
+        "+254-712-345-678": "+254712345678",
+        "712345678": "+254712345678",
+        "0112345678": "+254112345678",
+        "+447911123456": "+447911123456",  # other countries: E.164 only
+    }
+    for raw, expected in good.items():
+        res = client.post("/subscribers", json={"phone_number": raw, "latitude": -1.28, "longitude": 36.82})
+        assert res.status_code == 200, raw
+        from src.database import get_connection
+
+        conn = get_connection()
+        stored = [r["phone_number"] for r in conn.execute("SELECT phone_number FROM subscribers")]
+        conn.close()
+        assert expected in stored, (raw, stored)
+
+    for bad in ("", "abc", "12345", "+2547123", "0612345678", "+254 812 345 678", "07123456789012"):
+        res = client.post("/subscribers", json={"phone_number": bad, "latitude": -1.28, "longitude": 36.82})
+        assert res.status_code == 422, bad
+
+
+def test_subscribing_twice_updates_instead_of_duplicating(client):
+    from src.database import get_connection
+
+    first = client.post("/subscribers", json={"phone_number": "0712 345 678", "latitude": -1.28, "longitude": 36.82})
+    assert first.json()["status"] == "subscribed"
+    second = client.post("/subscribers", json={"phone_number": "+254712345678", "area": "moved", "latitude": -1.5, "longitude": 36.9})
+    assert second.json()["status"] == "updated"
+
+    conn = get_connection()
+    rows = conn.execute("SELECT phone_number, area, latitude FROM subscribers").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["area"] == "moved" and rows[0]["latitude"] == -1.5
+
+
+def test_missing_child_report_validation(client):
+    base = {
+        "child_name": "Test Child", "age": 8, "physical_description": "short",
+        "last_seen_latitude": -1.28, "last_seen_longitude": 36.82,
+        "last_seen_time": "2026-09-18 14:00", "reporter_phone": "0700 000 000",
+    }
+    ok = client.post("/missing-child/report", json=base)
+    assert ok.status_code == 200
+    for patch in ({"reporter_phone": "nope"}, {"last_seen_time": "later"}, {"last_seen_latitude": 0.0, "last_seen_longitude": 0.0},
+                  {"age": 25}, {"child_name": "x" * 101}):
+        assert client.post("/missing-child/report", json={**base, **patch}).status_code == 422, patch
+    # the stored reporter phone is the normalised form
+    from src.database import get_connection
+
+    conn = get_connection()
+    assert conn.execute("SELECT reporter_phone FROM missing_child_cases").fetchone()["reporter_phone"] == "+254700000000"
+    conn.close()

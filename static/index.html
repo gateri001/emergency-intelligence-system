@@ -251,6 +251,22 @@ function esc(v) {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// FastAPI returns `detail` as a string for most errors but as a LIST of
+// {loc, msg} objects for validation failures (HTTP 422) - which used to print
+// as "[object Object]". Turns either into a readable sentence.
+function errMsg(data, fallback) {
+  const d = data && data.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) {
+    return d.map(e => {
+      const field = (e.loc || []).filter(p => p !== 'body').join(' > ');
+      const msg = String(e.msg || '').replace(/^Value error, /, '');
+      return field ? `${field}: ${msg}` : msg;
+    }).join('; ');
+  }
+  return fallback;
+}
+
 function nowTimestamp() {
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -325,7 +341,7 @@ async function reportIncident() {
   });
   const data = await res.json();
   document.getElementById('reportResult').innerText =
-    res.ok ? `Reported (incident #${data.incident_id})` : (data.detail || 'Error submitting report');
+    res.ok ? `Reported (incident #${data.incident_id})` : errMsg(data, 'Error submitting report');
   if (res.ok) loadRecent();
 }
 
@@ -346,7 +362,7 @@ async function predictRisk() {
   const el = document.getElementById('predictionResult');
   el.innerHTML = res.ok
     ? `Predicted risk: <span class="severity-${esc(data.predicted_severity)}">${esc(data.predicted_severity)}</span> (score ${esc(data.risk_score)})`
-    : (data.detail || 'Error getting prediction');
+    : esc(errMsg(data, 'Error getting prediction'));
 }
 
 // -------------------------------------------------------------------
@@ -364,7 +380,7 @@ async function requestRoute() {
     body: JSON.stringify({ latitude: selected.lat, longitude: selected.lon })
   });
   const data = await res.json();
-  if (!res.ok) { resultEl.innerText = data.detail || 'No safe route found from this location.'; return; }
+  if (!res.ok) { resultEl.innerText = errMsg(data, 'No safe route found from this location.'); return; }
 
   if (routeLayer) map.removeLayer(routeLayer);
   routeMarkers.forEach(m => map.removeLayer(m));
@@ -508,7 +524,7 @@ async function officerLogin() {
   form.set('password', password);
   const res = await fetch(`${API}/token`, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: form });
   const data = await res.json();
-  if (!res.ok) { document.getElementById('officerLoginResult').innerText = data.detail || 'Login failed'; return; }
+  if (!res.ok) { document.getElementById('officerLoginResult').innerText = errMsg(data, 'Login failed'); return; }
   officerToken = data.access_token;
   officerUser = username;
   sessionStorage.setItem('officerToken', officerToken);
@@ -550,7 +566,7 @@ async function triggerBroadcast() {
   });
   const data = await res.json();
   const el = document.getElementById('broadcastResult');
-  if (!res.ok) { el.innerText = data.detail || 'Broadcast failed'; return; }
+  if (!res.ok) { el.innerText = errMsg(data, 'Broadcast failed'); return; }
   let msg = `Sent to ${data.recipients_reached} subscriber(s) within ${data.radius_km}km.`;
   if (data.reporter_safety_warning) {
     msg += `<br><br><span style="color:var(--amber)">${esc(data.reporter_safety_warning)}</span>`;
@@ -583,7 +599,7 @@ async function reportMissingChild() {
   const data = await res.json();
   el.innerText = res.ok
     ? `Reported (case #${data.case_id}). An officer will review this before anything is made public.`
-    : (data.detail || 'Error submitting report');
+    : errMsg(data, 'Error submitting report');
   if (res.ok) loadMissingPublic();
 }
 
@@ -647,7 +663,7 @@ async function broadcastMissingCase(id) {
   const data = await res.json();
   alert(res.ok
     ? `Sent to ${data.recipients_reached} subscriber(s)${data.failed_count ? ', ' + data.failed_count + ' failed' : ''}.`
-    : (data.detail || 'Broadcast failed'));
+    : errMsg(data, 'Broadcast failed'));
 }
 
 async function verifyMissingCase(id) {

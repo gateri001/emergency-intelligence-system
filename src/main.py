@@ -319,15 +319,33 @@ def list_recommended_alerts(officer: str = Depends(get_current_officer)):
 @app.post("/subscribers")
 @limiter.limit("10/minute")
 def add_subscriber(request: Request, sub: SubscriberIn):
-    """Anyone can opt in to receive area alerts - no auth required to subscribe."""
+    """Anyone can opt in to receive area alerts - no auth required to subscribe.
+
+    Upserts by phone number: subscribing again (same person, any phone
+    format) updates their location instead of adding a duplicate row - which
+    used to mean the same person got the same alert SMS several times."""
     conn = get_connection()
-    conn.execute(
-        "INSERT INTO subscribers (phone_number, area, latitude, longitude) VALUES (?, ?, ?, ?)",
-        (sub.phone_number, sub.area, sub.latitude, sub.longitude),
+    key = phone_key(sub.phone_number)
+    existing = next(
+        (r for r in conn.execute("SELECT id, phone_number FROM subscribers").fetchall()
+         if phone_key(r["phone_number"]) == key),
+        None,
     )
+    if existing:
+        conn.execute(
+            "UPDATE subscribers SET phone_number = ?, area = ?, latitude = ?, longitude = ? WHERE id = ?",
+            (sub.phone_number, sub.area, sub.latitude, sub.longitude, existing["id"]),
+        )
+        status = "updated"
+    else:
+        conn.execute(
+            "INSERT INTO subscribers (phone_number, area, latitude, longitude) VALUES (?, ?, ?, ?)",
+            (sub.phone_number, sub.area, sub.latitude, sub.longitude),
+        )
+        status = "subscribed"
     conn.commit()
     conn.close()
-    return {"status": "subscribed"}
+    return {"status": status}
 
 
 @app.post("/alert/broadcast", response_model=BroadcastResponse)
