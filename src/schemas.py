@@ -84,6 +84,7 @@ class BroadcastResponse(BaseModel):
     recipients_reached: int
     radius_km: float
     message: str
+    failed_count: int = 0
     reporter_safety_warning: str | None = None
 
 
@@ -151,6 +152,26 @@ class MissingChildCaseOfficerOut(MissingChildCaseOut):
 
 class MissingChildStatusUpdate(BaseModel):
     status: Literal["verified", "found_safe", "found_deceased", "closed_false_report"]
+
+
+class MissingChildBroadcastRequest(BaseModel):
+    # Optional: if omitted, a message is composed from PUBLIC case fields only.
+    message: str | None = Field(None, min_length=1, max_length=300)
+    radius_km: float = Field(10.0, gt=0, le=100)
+
+
+class MissingChildBroadcastPreview(BaseModel):
+    message: str
+    recipient_count: int
+    radius_km: float
+
+
+class MissingChildBroadcastResponse(BaseModel):
+    broadcast_id: int
+    recipients_reached: int
+    failed_count: int
+    radius_km: float
+    message: str
 
 
 class HealthFacilityOut(BaseModel):

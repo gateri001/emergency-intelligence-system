@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
@@ -10,7 +11,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from src.auth import authenticate_officer, create_access_token, get_current_officer
-from src.broadcast import get_provider
+from src.broadcast import get_provider, phone_key, select_targets, send_all
 from src.confidence import alert_tier, apply_vote, is_within_known_flood_zone
 from src.database import get_connection, init_db
 from src.geo import haversine_km
@@ -25,6 +26,9 @@ from src.schemas import (
     HealthFacilityOut,
     IncidentOut,
     IncidentReport,
+    MissingChildBroadcastPreview,
+    MissingChildBroadcastRequest,
+    MissingChildBroadcastResponse,
     MissingChildCaseOfficerOut,
     MissingChildCaseOut,
     MissingChildReport,
@@ -340,20 +344,13 @@ def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_curr
         )
 
     subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
-    targets = [
-        s for s in subscribers
-        if haversine_km(incident["latitude"], incident["longitude"], s["latitude"], s["longitude"])
-        <= request.radius_km
-    ]
-
-    provider = get_provider()
-    for s in targets:
-        provider.send(s["phone_number"], request.message)
+    targets = select_targets(subscribers, incident["latitude"], incident["longitude"], request.radius_km)
+    sent, failed = send_all(get_provider(), targets, request.message)
 
     cursor = conn.execute(
-        "INSERT INTO broadcasts (incident_id, message, radius_km, recipient_count, triggered_by) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (request.incident_id, request.message, request.radius_km, len(targets), officer),
+        "INSERT INTO broadcasts (incident_id, message, radius_km, recipient_count, failed_count, triggered_by) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (request.incident_id, request.message, request.radius_km, sent, failed, officer),
     )
     conn.commit()
     broadcast_id = cursor.lastrowid
@@ -370,7 +367,8 @@ def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_curr
 
     return BroadcastResponse(
         broadcast_id=broadcast_id,
-        recipients_reached=len(targets),
+        recipients_reached=sent,
+        failed_count=failed,
         radius_km=request.radius_km,
         message=request.message,
         reporter_safety_warning=warning,
@@ -517,6 +515,106 @@ def update_missing_child_case_status(case_id: int, update: MissingChildStatusUpd
     updated = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
     conn.close()
     return MissingChildCaseOfficerOut(**dict(updated))
+
+
+# -- Missing Child Alert: geo-targeted broadcast ------------------------------
+# The reach is the point of this feature. Human-in-the-loop preserved: an
+# officer sees the exact message and how many people it would reach BEFORE
+# anything is sent, and only a VERIFIED case can be broadcast at all.
+
+ALERT_CONTACT = os.environ.get("EIS_ALERT_CONTACT", "999 or 112")
+SMS_MAX = 300
+
+
+def _compose_missing_child_message(case) -> str:
+    """Built ONLY from public case fields - never the reporter's phone or
+    relationship. Trimmed to fit one 300-char message: the fixed parts
+    (who, where, what to do) always survive; description/clothing are cut
+    first if it's too long."""
+    who = case["child_name"] + (f", {case['age']}" if case["age"] is not None else "")
+    where = case["last_seen_area"] or "nearby"
+    tail = f" Last seen {where} at {case['last_seen_time']}. If seen call {ALERT_CONTACT}."
+    head = f"MISSING CHILD: {who}."
+    room = SMS_MAX - len(head) - len(tail) - 2
+    details = case["physical_description"].strip()
+    if case["clothing_description"].strip():
+        details += ". Wearing " + case["clothing_description"].strip()
+    if len(details) > room:
+        details = details[: max(room - 1, 0)].rstrip() + "…"
+    return f"{head} {details}.{tail}" if details else f"{head}{tail}"
+
+
+def _message_contains_phone(message: str, phone: str) -> bool:
+    key = phone_key(phone)
+    digits = "".join(ch for ch in message if ch.isdigit())
+    return len(key) >= 7 and key in digits
+
+
+def _get_verified_case_or_error(conn, case_id: int):
+    case = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
+    if case is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Case not found")
+    if case["status"] != "verified":
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only verified cases can be broadcast; this one is '{case['status']}'",
+        )
+    return case
+
+
+@app.get("/missing-child/cases/{case_id}/broadcast-preview", response_model=MissingChildBroadcastPreview)
+def preview_missing_child_broadcast(case_id: int, radius_km: float = 10.0,
+                                     officer: str = Depends(get_current_officer)):
+    if not (0 < radius_km <= 100):
+        raise HTTPException(status_code=400, detail="radius_km must be between 0 and 100")
+    conn = get_connection()
+    case = _get_verified_case_or_error(conn, case_id)
+    subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
+    conn.close()
+    targets = select_targets(subscribers, case["last_seen_latitude"], case["last_seen_longitude"], radius_km)
+    return MissingChildBroadcastPreview(
+        message=_compose_missing_child_message(case), recipient_count=len(targets), radius_km=radius_km
+    )
+
+
+@app.post("/missing-child/cases/{case_id}/broadcast", response_model=MissingChildBroadcastResponse)
+def broadcast_missing_child(case_id: int, body: MissingChildBroadcastRequest,
+                             officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    case = _get_verified_case_or_error(conn, case_id)
+    message = body.message or _compose_missing_child_message(case)
+    if _message_contains_phone(message, case["reporter_phone"]):
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="Message contains the reporter's phone number. Reporter contact must never be broadcast.",
+        )
+
+    subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
+    targets = select_targets(subscribers, case["last_seen_latitude"], case["last_seen_longitude"], body.radius_km)
+    sent, failed = send_all(get_provider(), targets, message)
+    cursor = conn.execute(
+        "INSERT INTO missing_child_broadcasts (case_id, message, radius_km, recipient_count, failed_count, triggered_by) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (case_id, message, body.radius_km, sent, failed, officer),
+    )
+    conn.commit()
+    broadcast_id = cursor.lastrowid
+    conn.close()
+    return MissingChildBroadcastResponse(
+        broadcast_id=broadcast_id, recipients_reached=sent, failed_count=failed,
+        radius_km=body.radius_km, message=message,
+    )
+
+
+@app.get("/missing-child/broadcasts")
+def list_missing_child_broadcasts(officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM missing_child_broadcasts ORDER BY id DESC LIMIT 50").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # -------------------------------------------------------------------

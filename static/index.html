@@ -584,6 +584,9 @@ function renderMissingCase(c, isOfficer) {
     if (c.status === 'reported') {
       actions += `<button class="vote-btn" onclick="verifyMissingCase(${c.id})">Verify</button>`;
     }
+    if (c.status === 'verified') {
+      actions += `<button class="vote-btn" style="background:var(--red)" onclick="broadcastMissingCase(${c.id})">Broadcast…</button>`;
+    }
     if (c.status === 'reported' || c.status === 'verified') {
       actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'found_safe')">Found safe</button>`;
       actions += `<button class="vote-btn" onclick="updateMissingStatus(${c.id}, 'found_deceased')">Found deceased</button>`;
@@ -612,6 +615,28 @@ async function loadMissingOfficer() {
   const data = await res.json();
   const el = document.getElementById('missingOfficerList');
   el.innerHTML = data.length ? data.map(c => renderMissingCase(c, true)).join('') : 'No cases on file.';
+}
+
+// Human-in-the-loop: the officer sees the exact message and how many people
+// it would reach BEFORE anything is sent. Only verified cases can be broadcast.
+async function broadcastMissingCase(id) {
+  const radiusInput = prompt('Alert subscribers within how many km of the last-seen location?', '10');
+  if (radiusInput === null) return;
+  const radius = parseFloat(radiusInput);
+  if (!(radius > 0 && radius <= 100)) { alert('Enter a radius between 0 and 100 km.'); return; }
+  const pre = await fetch(`${API}/missing-child/cases/${id}/broadcast-preview?radius_km=${radius}`, { headers: officerHeaders() });
+  const preData = await pre.json();
+  if (!pre.ok) { alert(preData.detail || 'Could not prepare the broadcast.'); return; }
+  const ok = confirm(`This SMS will be sent to ${preData.recipient_count} subscriber(s) within ${radius} km:\n\n${preData.message}\n\nSend it?`);
+  if (!ok) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/broadcast`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
+    body: JSON.stringify({ radius_km: radius, message: preData.message })
+  });
+  const data = await res.json();
+  alert(res.ok
+    ? `Sent to ${data.recipients_reached} subscriber(s)${data.failed_count ? ', ' + data.failed_count + ' failed' : ''}.`
+    : (data.detail || 'Broadcast failed'));
 }
 
 async function verifyMissingCase(id) {

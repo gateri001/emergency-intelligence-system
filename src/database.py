@@ -72,10 +72,16 @@ def init_db():
             message TEXT NOT NULL,
             radius_km REAL NOT NULL,
             recipient_count INTEGER NOT NULL,
+            failed_count INTEGER NOT NULL DEFAULT 0,
             triggered_by TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
+    try:
+        conn.execute("ALTER TABLE broadcasts ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
     # Populated by scripts/ingest_gdacs.py - defined here too so the API
     # never 500s on these tables just because ingestion hasn't run yet.
     conn.execute("""
@@ -147,6 +153,21 @@ def init_db():
             verified_by TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    # Broadcast log for Missing Child Alert. Its own table (not `broadcasts`)
+    # because `broadcasts.incident_id` is NOT NULL and references incidents,
+    # which SQLite can't relax in place, and a case isn't an incident.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS missing_child_broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL REFERENCES missing_child_cases(id),
+            message TEXT NOT NULL,
+            radius_km REAL NOT NULL,
+            recipient_count INTEGER NOT NULL,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            triggered_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
     # Populated by scripts/ingest_health_facilities.py - real hospital/clinic

@@ -122,3 +122,51 @@ def get_provider() -> BroadcastProvider:
     if name == "africastalking":
         return AfricasTalkingProvider()
     raise ValueError(f"Unknown BROADCAST_PROVIDER: {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# Shared dispatch helpers - used by every broadcast path (incident alerts and
+# Missing Child Alert) so they behave identically.
+# ---------------------------------------------------------------------------
+
+def phone_key(phone: str) -> str:
+    """Comparable form of a phone number: digits only, last 9 - so
+    +254712345678, 0712 345 678 and 254712345678 are all the same person."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return digits[-9:] if len(digits) >= 9 else digits
+
+
+def select_targets(subscribers, latitude: float, longitude: float, radius_km: float):
+    """Subscribers within radius_km, one per person. A number subscribed
+    twice (nothing used to stop that) would otherwise be texted twice - a
+    cost and, for an urgent alert, a trust problem."""
+    from src.geo import haversine_km
+
+    seen, targets = set(), []
+    for s in subscribers:
+        if haversine_km(latitude, longitude, s["latitude"], s["longitude"]) > radius_km:
+            continue
+        key = phone_key(s["phone_number"])
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(s)
+    return targets
+
+
+def send_all(provider: BroadcastProvider, targets, message: str):
+    """Returns (sent, failed). Counts what the provider actually reported,
+    instead of assuming every send worked: the old code logged
+    recipients_reached = len(targets) even when a provider returned
+    success=False, so a dead SMS gateway looked like a successful alert."""
+    sent = failed = 0
+    for s in targets:
+        try:
+            result = provider.send(s["phone_number"], message)
+        except Exception:
+            result = {"success": False}
+        if result.get("success"):
+            sent += 1
+        else:
+            failed += 1
+    return sent, failed

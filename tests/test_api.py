@@ -299,3 +299,94 @@ def test_nearest_facilities_sorted_by_distance(client):
     assert len(data) == 2
     assert data[0]["name"] == "Near Hospital"
     assert data[0]["distance_km"] < data[1]["distance_km"]
+
+
+# --- Missing Child broadcast + shared dispatch helpers -----------------------
+
+def _add_subscribers(rows):
+    from src.database import get_connection
+
+    conn = get_connection()
+    conn.executemany(
+        "INSERT INTO subscribers (phone_number, area, latitude, longitude) VALUES (?, '', ?, ?)", rows
+    )
+    conn.commit()
+    conn.close()
+
+
+def _verified_case(client, headers, **overrides):
+    case_id = _report_missing_child(client, **overrides)
+    assert client.post(f"/missing-child/cases/{case_id}/verify", headers=headers).status_code == 200
+    return case_id
+
+
+def test_missing_child_broadcast_requires_a_verified_case(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    case_id = _report_missing_child(client)  # still 'reported'
+    res = client.post(f"/missing-child/cases/{case_id}/broadcast", json={}, headers=headers)
+    assert res.status_code == 400
+    assert client.get(f"/missing-child/cases/{case_id}/broadcast-preview", headers=headers).status_code == 400
+
+
+def test_missing_child_broadcast_endpoints_require_officer_auth(client):
+    case_id = _report_missing_child(client)
+    assert client.post(f"/missing-child/cases/{case_id}/broadcast", json={}).status_code == 401
+    assert client.get(f"/missing-child/cases/{case_id}/broadcast-preview").status_code == 401
+    assert client.get("/missing-child/broadcasts").status_code == 401
+
+
+def test_missing_child_broadcast_never_leaks_reporter_phone(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    case_id = _verified_case(client, headers, reporter_phone="+254700123456")
+
+    preview = client.get(f"/missing-child/cases/{case_id}/broadcast-preview", headers=headers).json()
+    assert "700123456" not in preview["message"].replace(" ", "")
+    assert "MISSING CHILD" in preview["message"] and len(preview["message"]) <= 300
+
+    # an officer-typed message that includes the reporter's number, in any format, is refused
+    for leaky in ("Call the parent on 0700 123 456", "contact +254700123456 now", "call 700-123-456"):
+        res = client.post(f"/missing-child/cases/{case_id}/broadcast", json={"message": leaky}, headers=headers)
+        assert res.status_code == 400, leaky
+
+
+def test_missing_child_broadcast_targets_each_person_once_within_radius(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    case_id = _verified_case(client, headers)  # last seen at (-1.28, 36.82)
+    _add_subscribers([
+        ("+254711111111", -1.281, 36.821),   # near
+        ("0711 111 111", -1.282, 36.822),    # SAME person, different format, also near
+        ("+254722222222", -1.285, 36.825),   # near, different person
+        ("+254733333333", -1.50, 37.20),     # far away
+    ])
+    preview = client.get(f"/missing-child/cases/{case_id}/broadcast-preview?radius_km=10", headers=headers).json()
+    assert preview["recipient_count"] == 2
+
+    res = client.post(f"/missing-child/cases/{case_id}/broadcast", json={"radius_km": 10}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["recipients_reached"] == 2 and res.json()["failed_count"] == 0
+
+    log = client.get("/missing-child/broadcasts", headers=headers).json()
+    assert log[0]["case_id"] == case_id and log[0]["recipient_count"] == 2
+
+
+class _AlwaysFailsProvider:
+    def send(self, phone_number, message):
+        return {"success": False, "error": "gateway down"}
+
+
+def test_broadcasts_count_real_failures_not_attempts(client, officer_token, monkeypatch):
+    import src.main as main_module
+
+    monkeypatch.setattr(main_module, "get_provider", lambda: _AlwaysFailsProvider())
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    _add_subscribers([("+254711111111", -1.281, 36.821), ("+254722222222", -1.285, 36.825)])
+
+    case_id = _verified_case(client, headers)
+    res = client.post(f"/missing-child/cases/{case_id}/broadcast", json={"radius_km": 10}, headers=headers).json()
+    assert res["recipients_reached"] == 0 and res["failed_count"] == 2
+
+    inc_id = _report(client, type="robbery", latitude=-1.28, longitude=36.82)
+    res2 = client.post(
+        "/alert/broadcast", json={"incident_id": inc_id, "message": "Stay alert.", "radius_km": 10}, headers=headers
+    ).json()
+    assert res2["recipients_reached"] == 0 and res2["failed_count"] == 2
