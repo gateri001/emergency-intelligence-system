@@ -14,7 +14,7 @@ from slowapi.util import get_remote_address
 
 from src.auth import authenticate_officer, create_access_token, get_current_officer
 from src.broadcast import get_provider, phone_key, select_targets, send_all
-from src.confidence import alert_tier, apply_vote, fire_detection_tier, is_within_known_flood_zone
+from src.confidence import alert_tier, fire_detection_tier, is_within_known_flood_zone, with_votes
 from src.database import get_connection, init_db
 from src.geo import haversine_km
 from src.reflex import reflex_assessment
@@ -108,7 +108,10 @@ def health():
 # -------------------------------------------------------------------
 
 @app.post("/token")
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
+@limiter.limit("5/minute")
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    # Rate-limited: without it, an officer password can be guessed as fast
+    # as the server answers.
     officer = authenticate_officer(form_data.username, form_data.password)
     if officer is None:
         raise HTTPException(status_code=400, detail="Invalid credentials")
@@ -179,11 +182,11 @@ def _insert_incident(source: str, report: IncidentReport, background_tasks: Back
     cursor = conn.execute(
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
-            visibility, has_evidence, confidence_score, corroboration_count, alert_tier)
-           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
+            visibility, has_evidence, base_confidence, confidence_score, corroboration_count, alert_tier)
+           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)""",
         (source, incident_type, report.area.strip(),
          report.latitude, report.longitude, report.description, report.timestamp,
-         report.visibility, int(report.has_evidence), confidence, 0, tier),
+         report.visibility, int(report.has_evidence), confidence, confidence, 0, tier),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -237,12 +240,20 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
     would itself confirm something restricted exists at that ID.
     """
     conn = get_connection()
+    # Write transaction from the read onward: two votes arriving together, or
+    # a vote racing the strategic pass, must not overwrite each other.
+    conn.execute("BEGIN IMMEDIATE")
     row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
     if row is None or row["visibility"] == "officers_only":
+        conn.rollback()
         conn.close()
         raise HTTPException(status_code=404, detail="Incident not found")
 
-    new_confidence = apply_vote(row["confidence_score"], row["type"], vote.confirm)
+    # Rows from before base_confidence existed: treat their current score as the base.
+    base = row["base_confidence"] if row["base_confidence"] is not None else row["confidence_score"]
+    confirms = row["vote_confirms"] + (1 if vote.confirm else 0)
+    disputes = row["vote_disputes"] + (0 if vote.confirm else 1)
+    new_confidence = with_votes(base, confirms, disputes)
     new_corroboration = row["corroboration_count"] + (1 if vote.confirm else 0)
     if row["source"] == "bulk" and row["type"] == "fire" and row["magnitude"] is not None:
         # A satellite fire's tier is its urgency (radiative power), not its
@@ -253,8 +264,9 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
         new_tier = alert_tier(new_confidence, row["type"])
 
     conn.execute(
-        "UPDATE incidents SET confidence_score = ?, alert_tier = ?, corroboration_count = ? WHERE id = ?",
-        (new_confidence, new_tier, new_corroboration, incident_id),
+        "UPDATE incidents SET base_confidence = ?, confidence_score = ?, alert_tier = ?, corroboration_count = ?, "
+        "vote_confirms = ?, vote_disputes = ? WHERE id = ?",
+        (base, new_confidence, new_tier, new_corroboration, confirms, disputes, incident_id),
     )
     conn.commit()
     updated = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
@@ -542,7 +554,11 @@ def list_missing_child_cases():
     report against whoever filed it)."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM missing_child_cases WHERE status IN ('verified', 'found_safe') "
+        # found_safe is public only if the case was verified first. A case
+        # closed as found_safe straight from 'reported' was never checked, so
+        # publishing it would put an unverified child's details on the feed.
+        "SELECT * FROM missing_child_cases WHERE status = 'verified' "
+        "OR (status = 'found_safe' AND verified_by IS NOT NULL) "
         "ORDER BY created_at DESC"
     ).fetchall()
     conn.close()
@@ -591,7 +607,9 @@ def update_missing_child_case_status(case_id: int, update: MissingChildStatusUpd
         raise HTTPException(status_code=400, detail=f"Case is already resolved as '{row['status']}'")
 
     conn.execute(
-        "UPDATE missing_child_cases SET status = ?, verified_by = COALESCE(verified_by, ?), "
+        # resolved_by, not verified_by: resolving a case is not verifying it,
+        # and verified_by is what makes a found_safe case public.
+        "UPDATE missing_child_cases SET status = ?, resolved_by = ?, "
         "updated_at = datetime('now') WHERE id = ?",
         (update.status, officer, case_id),
     )

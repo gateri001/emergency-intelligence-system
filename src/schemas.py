@@ -256,7 +256,8 @@ class MissingChildCaseOfficerOut(MissingChildCaseOut):
 
 
 class MissingChildStatusUpdate(BaseModel):
-    status: Literal["verified", "found_safe", "found_deceased", "closed_false_report"]
+    # 'verified' is deliberately absent: verifying goes through /verify only.
+    status: Literal["found_safe", "found_deceased", "closed_false_report"]
 
 
 class MissingChildBroadcastRequest(BaseModel):

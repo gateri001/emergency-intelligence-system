@@ -647,3 +647,48 @@ def test_citizen_report_nearby_bumps_a_satellite_fire(client, officer_token):
     _insert_fire(12.0, lat=-0.5, lon=37.0)
     fire = next(f for f in _fires_by_source(client, officer_token) if f["source"] == "bulk")
     assert fire["alert_tier"] == "sms_recommended"  # 12 MW would be in_app without the human report
+
+
+def test_repeated_confirm_votes_are_capped(client):
+    # One person resending "confirm" must not walk a report up to critical.
+    inc_id = _report(client, type="flood")
+    base = client.get("/incidents").json()[0]["confidence_score"]
+    for _ in range(5):
+        last = client.post(f"/report/{inc_id}/vote", json={"confirm": True}).json()
+    assert last["confidence_score"] == round(base + 0.15, 3)
+    assert last["alert_tier"] != "critical"
+
+
+def test_strategic_pass_keeps_votes_that_arrived_before_it(client):
+    from src.strategic import refine_incident
+
+    inc_id = _report(client, type="flood")
+    voted = client.post(f"/report/{inc_id}/vote", json={"confirm": True}).json()
+    # Re-run the strategic pass, as if it finished after the vote landed.
+    refine_incident(inc_id, "citizen", "flood", -1.19, 36.90, "2026-09-12 10:00", False)
+    after = {r["id"]: r for r in client.get("/incidents").json()}[inc_id]
+    assert after["confidence_score"] == voted["confidence_score"]
+
+
+def test_unverified_missing_child_closed_found_safe_stays_private(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    case_id = _report_missing_child(client)
+    res = client.post(f"/missing-child/cases/{case_id}/status", json={"status": "found_safe"}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["verified_by"] is None
+    assert case_id not in [c["id"] for c in client.get("/missing-child/cases").json()]
+
+
+def test_status_endpoint_cannot_verify_a_case(client, officer_token):
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    case_id = _report_missing_child(client)
+    res = client.post(f"/missing-child/cases/{case_id}/status", json={"status": "verified"}, headers=headers)
+    assert res.status_code == 422
+    assert case_id not in [c["id"] for c in client.get("/missing-child/cases").json()]
+
+
+def test_login_is_rate_limited(client):
+    codes = [client.post("/token", data={"username": "nobody", "password": "guess"}).status_code
+             for _ in range(6)]
+    assert codes[:5] == [400] * 5
+    assert codes[5] == 429

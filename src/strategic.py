@@ -15,7 +15,8 @@ run, only that it eventually does.
 """
 import logging
 
-from src.confidence import alert_tier, compute_initial_confidence, count_nearby_reports, is_within_known_flood_zone
+from src.confidence import (alert_tier, compute_initial_confidence, count_nearby_reports,
+                            is_within_known_flood_zone, with_votes)
 from src.database import get_connection
 from src.risk_surface import point_risk
 
@@ -44,19 +45,27 @@ def refine_incident(incident_id: int, source: str, incident_type: str, latitude:
             conn, latitude, longitude, incident_type, timestamp, exclude_id=incident_id
         )
         ground_truth = is_within_known_flood_zone(conn, incident_type, latitude, longitude)
-        confidence = compute_initial_confidence(source, incident_type, has_evidence, nearby, ground_truth)
-        tier = alert_tier(confidence, incident_type)
+        base = compute_initial_confidence(source, incident_type, has_evidence, nearby, ground_truth)
         _, severity = point_risk(latitude, longitude, incident_type)
 
+        # Votes may have arrived while this pass ran. Read them and write the
+        # result inside one write transaction so none is overwritten.
+        conn.execute("BEGIN IMMEDIATE")
+        votes = conn.execute(
+            "SELECT vote_confirms, vote_disputes FROM incidents WHERE id = ?", (incident_id,)
+        ).fetchone()
+        confidence = with_votes(base, votes["vote_confirms"], votes["vote_disputes"])
+        tier = alert_tier(confidence, incident_type)
         conn.execute(
-            "UPDATE incidents SET confidence_score = ?, alert_tier = ?, predicted_severity = ?, "
-            "scoring_stage = 'strategic' WHERE id = ?",
-            (confidence, tier, severity, incident_id),
+            "UPDATE incidents SET base_confidence = ?, confidence_score = ?, alert_tier = ?, "
+            "predicted_severity = ?, scoring_stage = 'strategic' WHERE id = ?",
+            (base, confidence, tier, severity, incident_id),
         )
         conn.commit()
     except Exception:
         logger.exception("Strategic refinement failed for incident %s - it will stay at reflex-only confidence", incident_id)
         try:
+            conn.rollback()
             conn.execute("UPDATE incidents SET scoring_stage = 'failed' WHERE id = ?", (incident_id,))
             conn.commit()
         except Exception:

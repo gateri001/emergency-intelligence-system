@@ -30,7 +30,10 @@ def init_db():
             corroboration_count INTEGER NOT NULL DEFAULT 0,
             alert_tier TEXT NOT NULL DEFAULT 'in_app',
             scoring_stage TEXT NOT NULL DEFAULT 'reflex' CHECK(scoring_stage IN ('reflex', 'strategic', 'failed')),
-            magnitude REAL
+            magnitude REAL,
+            base_confidence REAL,
+            vote_confirms INTEGER NOT NULL DEFAULT 0,
+            vote_disputes INTEGER NOT NULL DEFAULT 0
         )
     """)
     # Migration for databases created before visibility/confidence scoring
@@ -44,6 +47,11 @@ def init_db():
         "alert_tier TEXT NOT NULL DEFAULT 'in_app'",
         "scoring_stage TEXT NOT NULL DEFAULT 'reflex'",
         "magnitude REAL",  # sensor magnitude, e.g. fire radiative power (MW) for satellite fires
+        # Confidence before crowd votes. Stored separately so the strategic
+        # pass and each vote recompute from it instead of overwriting each other.
+        "base_confidence REAL",
+        "vote_confirms INTEGER NOT NULL DEFAULT 0",
+        "vote_disputes INTEGER NOT NULL DEFAULT 0",
     ):
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")
@@ -153,10 +161,16 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'reported'
                 CHECK(status IN ('reported', 'verified', 'found_safe', 'found_deceased', 'closed_false_report')),
             verified_by TEXT,
+            resolved_by TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
+    try:
+        conn.execute("ALTER TABLE missing_child_cases ADD COLUMN resolved_by TEXT")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
     # Broadcast log for Missing Child Alert. Its own table (not `broadcasts`)
     # because `broadcasts.incident_id` is NOT NULL and references incidents,
     # which SQLite can't relax in place, and a case isn't an incident.

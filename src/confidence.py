@@ -45,6 +45,14 @@ HISTORICAL_GROUND_TRUTH_BONUS = 0.20  # report falls inside a real, satellite-ve
 
 VOTE_CONFIRM_BONUS = 0.15
 VOTE_DISPUTE_PENALTY = 0.20
+# Votes are anonymous, so their TOTAL effect is capped: at most one confirm's
+# worth up, one dispute's worth down. Without the cap, one person resending
+# "confirm" could walk a lone citizen report up to critical, or bury a real
+# one with disputes. Per-IP dedup was rejected: Kenyan mobile carriers put
+# thousands of users behind one shared IP (carrier-grade NAT), so it would
+# block real voters. Real per-person votes need verified phones (later).
+MAX_VOTE_BOOST = VOTE_CONFIRM_BONUS
+MAX_VOTE_PENALTY = VOTE_DISPUTE_PENALTY
 
 # (sms_recommended threshold, critical threshold) per category. Flood/medical
 # use the illustrative 30%/60% split from early design discussion; crime is
@@ -147,9 +155,11 @@ def is_within_known_flood_zone(conn, incident_type: str, latitude: float, longit
     return False
 
 
-def apply_vote(current_confidence: float, incident_type: str, confirm: bool) -> float:
-    delta = VOTE_CONFIRM_BONUS if confirm else -VOTE_DISPUTE_PENALTY
-    return round(min(max(current_confidence + delta, 0.0), 1.0), 3)
+def with_votes(base_confidence: float, confirms: int, disputes: int) -> float:
+    """Pre-vote confidence plus the capped net effect of all crowd votes."""
+    delta = confirms * VOTE_CONFIRM_BONUS - disputes * VOTE_DISPUTE_PENALTY
+    delta = min(max(delta, -MAX_VOTE_PENALTY), MAX_VOTE_BOOST)
+    return round(min(max(base_confidence + delta, 0.0), 1.0), 3)
 
 
 def alert_tier(confidence: float, incident_type: str) -> str:
