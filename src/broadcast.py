@@ -154,11 +154,13 @@ def select_targets(subscribers, latitude: float, longitude: float, radius_km: fl
     return targets
 
 
-def send_all(provider: BroadcastProvider, targets, message: str):
+def send_all(provider: BroadcastProvider, targets, message: str, delivered: list | None = None):
     """Returns (sent, failed). Counts what the provider actually reported,
     instead of assuming every send worked: the old code logged
     recipients_reached = len(targets) even when a provider returned
-    success=False, so a dead SMS gateway looked like a successful alert."""
+    success=False, so a dead SMS gateway looked like a successful alert.
+    If `delivered` is given, the phone number of each successful send is
+    appended to it (used to send a follow-up to exactly those people)."""
     sent = failed = 0
     for s in targets:
         try:
@@ -167,6 +169,8 @@ def send_all(provider: BroadcastProvider, targets, message: str):
             result = {"success": False}
         if result.get("success"):
             sent += 1
+            if delivered is not None:
+                delivered.append(s["phone_number"])
         else:
             failed += 1
     return sent, failed

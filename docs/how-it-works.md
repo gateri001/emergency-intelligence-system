@@ -213,7 +213,8 @@ would come from institutions.)
 ## 9. Try it
 
 ```
-python scripts/create_officer.py <name>       # once
+python scripts/generate_keys.py               # once; set the two printed values, keep an offline copy
+python scripts/create_officer.py <name> --role owner   # once
 uvicorn src.main:app --reload
 # open http://127.0.0.1:8000/dashboard/
 pytest tests/ -q

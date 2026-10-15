@@ -380,6 +380,65 @@ by a regression test (48 tests).
   no on-ramp for real people), tabs fit, markers coloured by type, officer
   lists auto-refresh, readable validation errors.
 
+## Phase A: roles, reporter protection, two-person alerts (2026-10-15)
+
+Built so the funding proposal's safeguards are true in code, not just on paper.
+
+**Roles** (`officers.role`, `src/auth.py`): `officer` < `admin` < `owner`.
+The account is looked up on every request, so deleting it or changing its
+role works immediately rather than when the 8-hour token expires.
+`require_role("admin")` guards an endpoint. `GET /me` tells the console which
+buttons to show; the server still checks every action.
+
+**Crime reporter protection** (`src/privacy.py`, applied on every public route
+out: `/incidents`, the vote response, `/nearby`, and the risk surface behind
+`/predict` and `/risk/heatmap`):
+- Crime defaults to `officers_only`; the reporter must opt in to warning people nearby.
+- A public crime report is held back 15 minutes after it arrives.
+- Its public location snaps to a fixed ~500 m grid. Fixed, not random jitter,
+  because jitter can be averaged away by reloading many times.
+- The risk surface counts a crime only once it is public, at the blurred spot.
+  Otherwise the peak of a fine heatmap would sit on the reporter's position.
+- The optional phone number (crime only; any other type is refused) is
+  encrypted with Fernet using `EIS_DATA_KEY`. Without the key it is not stored
+  and the reporter is told so. No officer endpoint returns it.
+  `POST /incidents/{id}/reveal-reporter` (admin/owner) needs a written reason
+  of at least 15 characters, and the reveal and its log entry are committed together.
+
+**Audit log** (`audit_log` table, `GET /audit-log`, owner only): reveals,
+verifications (with OB number), renewals, proposals, approvals, rejections,
+resolutions, broadcasts and follow-ups.
+
+**Missing Child Alert, tightened:**
+- `verify` requires the police OB number, confirmed with the station.
+- A verified case is public and broadcastable for 72 hours (`expires_at`). After
+  that it drops out of public view until an officer re-confirms it with the
+  police and calls `renew` (with a note, logged).
+- SMS names the child by first name only.
+- Two-person rule. An officer or admin `POST`s `/missing-child/cases/{id}/broadcast-proposals`,
+  which fixes the exact message and radius. A different admin, or the owner,
+  approves (`/missing-child/broadcast-proposals/{id}/approve`) and only then is
+  it sent. Nobody can decide on their own proposal. Approval runs in a write
+  transaction, so it can never send twice. Resolving a case rejects its
+  pending proposals. Only the owner can send alone (`/missing-child/cases/{id}/broadcast`).
+- Who each alert reached is stored, and once the case is resolved
+  `POST /missing-child/cases/{id}/followup` sends a neutral "alert closed,
+  please disregard" to exactly those people, once.
+
+**Other additions:** `GET /nearby` (risk per category plus public incidents within
+2 km from the last 7 days, in one request, for the "Am I safe here?" screen);
+`POST /alert/broadcast-preview` (exact message and audience before an ordinary
+incident SMS).
+
+**Still open after Phase A:**
+- `/subscribers` does not verify phone ownership. That needs a one-time code by
+  SMS, so it waits for a working SMS provider. Until then, any public deployment
+  must keep sign-up off.
+- The dashboard uses browser pop-ups (`prompt`/`confirm`) for these flows. The
+  proper console is Phase C.
+- A crime report's free-text description and area label are shown publicly as
+  written when the reporter opts in; they are not scrubbed.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not

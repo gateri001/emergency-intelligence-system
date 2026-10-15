@@ -2,7 +2,9 @@
 The point_risk() speed-up (cached CSV, vectorised normaliser, faster timestamp
 parsing) must not change a single number. `_reference_*` below is the ORIGINAL
 implementation kept verbatim (iterrows + strptime, Python-loop max) as an
-independent oracle.
+independent oracle. One deliberate change since: crime reports only count
+once publicly visible, at their ~500 m blurred spot (src/privacy.py); the
+oracle applies that rule with its own independent arithmetic.
 """
 import os
 from datetime import datetime
@@ -27,19 +29,27 @@ def _reference_load_points(category):
 
     conn = get_connection()
     live = conn.execute(
-        "SELECT latitude, longitude, type, predicted_severity, timestamp FROM incidents "
+        "SELECT latitude, longitude, type, predicted_severity, timestamp, visibility, "
+        "created_at <= datetime('now', '-15 minutes') AS past_delay FROM incidents "
         "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
     ).fetchall()
     conn.close()
     for r in live:
         if category and rs.TYPE_CATEGORY.get(r["type"]) != category:
             continue
+        lat, lon = r["latitude"], r["longitude"]
+        if rs.TYPE_CATEGORY.get(r["type"]) == "crime":
+            if r["visibility"] != "public" or not r["past_delay"]:
+                continue
+            step = 0.0045
+            lat = (np.floor(lat / step) + 0.5) * step
+            lon = (np.floor(lon / step) + 0.5) * step
         try:
             dt = datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M")
         except ValueError:
             dt = now
         age = max((now - dt).days, 0)
-        rows.append((r["latitude"], r["longitude"], rs.SEVERITY_WEIGHT.get(r["predicted_severity"], 1.0) * 1.5, age))
+        rows.append((lat, lon, rs.SEVERITY_WEIGHT.get(r["predicted_severity"], 1.0) * 1.5, age))
     return np.array(rows) if rows else np.zeros((0, 4))
 
 
@@ -57,14 +67,16 @@ def _reference_point_risk(lat, lon, incident_type):
 def _seed_live_incidents():
     conn = get_connection()
     conn.executemany(
-        "INSERT INTO incidents (source, type, area, latitude, longitude, description, predicted_severity, timestamp) "
-        "VALUES ('citizen', ?, '', ?, ?, '', ?, ?)",
+        "INSERT INTO incidents (source, type, area, latitude, longitude, description, predicted_severity, timestamp, "
+        "visibility, created_at) VALUES ('citizen', ?, '', ?, ?, '', ?, ?, ?, ?)",
         [
-            ("flood", -1.19, 36.90, "High", "2026-09-20 10:00"),
-            ("flood", -1.20, 36.91, None, "2026-09-21 09:30"),        # reflex-stage row: severity still NULL
-            ("robbery", -1.28, 36.82, "Medium", "2026-09-01 18:00"),
-            ("fire", -0.50, 37.00, "Low", "not a timestamp"),          # legacy junk row: falls back to "now"
-            ("accident", -1.30, 36.80, "High", "2025-01-01 00:00"),
+            ("flood", -1.19, 36.90, "High", "2026-09-20 10:00", "public", "2026-09-20 10:01:00"),
+            ("flood", -1.20, 36.91, None, "2026-09-21 09:30", "public", "2026-09-21 09:31:00"),  # severity still NULL
+            ("robbery", -1.28137, 36.82291, "Medium", "2026-09-01 18:00", "public", "2026-09-01 18:01:00"),
+            ("theft", -1.30, 36.85, "High", "2026-09-02 18:00", "officers_only", "2026-09-02 18:01:00"),
+            ("assault", -1.31, 36.86, "High", "2026-09-02 18:00", "public", "2999-01-01 00:00:00"),  # inside delay
+            ("fire", -0.50, 37.00, "Low", "not a timestamp", "public", "2026-09-03 00:00:00"),  # junk timestamp: falls back to "now"
+            ("accident", -1.30, 36.80, "High", "2025-01-01 00:00", "public", "2025-01-01 00:01:00"),
         ],
     )
     conn.commit()

@@ -90,7 +90,7 @@
       <button class="secondary" onclick="useMyLocation()">Use my current location</button>
 
       <label class="field-label">Type</label>
-      <select id="type">
+      <select id="type" onchange="defaultVisibilityForType()">
         <option value="robbery">Robbery</option>
         <option value="burglary">Burglary</option>
         <option value="assault">Assault</option>
@@ -107,9 +107,15 @@
 
       <label class="field-label">Who should see this?</label>
       <select id="visibility">
-        <option value="public">Visible to everyone nearby</option>
+        <option value="public">Visible to everyone nearby (crime: shown as a rough area after 15 minutes)</option>
         <option value="officers_only">Officers only — for your safety (e.g. a crime in progress)</option>
       </select>
+
+      <div id="crimePhoneRow" style="display:none;">
+        <label class="field-label">Your phone (optional)</label>
+        <input id="crimePhone" placeholder="Only if you agree to be contacted" />
+        <div class="hint">Stored encrypted. Officers never see it; it is opened only if strictly needed, with a written reason that is logged.</div>
+      </div>
 
       <div class="checkbox-row">
         <input type="checkbox" id="hasEvidence" /> I have a photo/video of this
@@ -253,6 +259,12 @@
 
         <h3 style="margin-top:16px;">All Incidents (incl. officers-only)</h3>
         <div class="result" id="allIncidentsList">Loading…</div>
+
+        <div id="proposalSection" style="display:none;">
+          <h3 style="margin-top:16px;">Missing-child alerts waiting for approval</h3>
+          <div class="hint">Two-person rule: someone else proposed each of these. Approving sends the exact message shown.</div>
+          <div class="result" id="proposalList">Loading…</div>
+        </div>
 
         <h3 style="margin-top:16px;">Missing Child Cases (all statuses)</h3>
         <div class="result" id="missingOfficerList">Loading…</div>
@@ -419,13 +431,28 @@ async function reportIncident() {
     visibility: document.getElementById('visibility').value,
     has_evidence: document.getElementById('hasEvidence').checked
   };
+  const phone = document.getElementById('crimePhone').value.trim();
+  if (CRIME_TYPES.has(body.type) && phone) body.reporter_phone = phone;
   const res = await fetch(`${API}/report/citizen`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
   });
   const data = await res.json();
-  document.getElementById('reportResult').innerText =
-    res.ok ? `Reported (incident #${data.incident_id})` : errMsg(data, 'Error submitting report');
-  if (res.ok) loadRecent();
+  let msg = res.ok ? 'Report received.' : errMsg(data, 'Error submitting report');
+  if (res.ok && data.phone_stored === false) msg += ' Your phone number could not be stored, so nobody can call you back.';
+  document.getElementById('reportResult').innerText = msg;
+  if (res.ok) {
+    document.getElementById('crimePhone').value = '';
+    document.getElementById('description').value = '';
+    loadRecent();
+  }
+}
+
+// Crime is officers-only unless the reporter deliberately chooses to warn
+// people nearby; the server applies the same default if nothing is sent.
+function defaultVisibilityForType() {
+  const isCrime = CRIME_TYPES.has(document.getElementById('type').value);
+  document.getElementById('visibility').value = isCrime ? 'officers_only' : 'public';
+  document.getElementById('crimePhoneRow').style.display = isCrime ? 'block' : 'none';
 }
 
 // -------------------------------------------------------------------
@@ -623,8 +650,20 @@ async function loadStructuresSummary() {
 // -------------------------------------------------------------------
 let officerToken = sessionStorage.getItem('officerToken') || null;
 let officerUser = sessionStorage.getItem('officerUser') || null;
+let officerRole = null;  // from /me; only decides which buttons show - the server checks every action
 
 function officerHeaders() { return { 'Authorization': `Bearer ${officerToken}` }; }
+
+async function loadRole() {
+  const res = await fetch(`${API}/me`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const me = await res.json();
+  officerRole = me.role;
+  document.getElementById('officerName').innerText = `${me.username} (${me.role})`;
+  const approver = officerRole === 'admin' || officerRole === 'owner';
+  document.getElementById('proposalSection').style.display = approver ? 'block' : 'none';
+  if (approver) loadProposals();
+}
 
 function refreshOfficerView() {
   const loggedOut = document.getElementById('officerLoggedOut');
@@ -633,6 +672,7 @@ function refreshOfficerView() {
     loggedOut.style.display = 'none';
     loggedIn.style.display = 'block';
     document.getElementById('officerName').innerText = officerUser || '';
+    loadRole();
     loadRecommended();
     loadAllIncidents();
     loadMissingOfficer();
@@ -660,7 +700,7 @@ async function officerLogin() {
 }
 
 function officerLogout() {
-  officerToken = null; officerUser = null;
+  officerToken = null; officerUser = null; officerRole = null;
   sessionStorage.removeItem('officerToken'); sessionStorage.removeItem('officerUser');
   refreshOfficerView();
 }
@@ -687,6 +727,15 @@ async function triggerBroadcast() {
     message: document.getElementById('broadcastMessage').value,
     radius_km: parseFloat(document.getElementById('broadcastRadius').value) || 5
   };
+  const el0 = document.getElementById('broadcastResult');
+  const pre = await fetch(`${API}/alert/broadcast-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify(body)
+  });
+  const preData = await pre.json();
+  if (!pre.ok) { el0.innerText = errMsg(preData, 'Could not prepare the broadcast'); return; }
+  let question = `This SMS will go to ${preData.recipient_count} subscriber(s) within ${body.radius_km} km:\n\n${body.message}`;
+  if (preData.reporter_safety_warning) question += `\n\nWARNING: ${preData.reporter_safety_warning}`;
+  if (!confirm(question + '\n\nSend it?')) return;
   const res = await fetch(`${API}/alert/broadcast`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify(body)
   });
@@ -739,11 +788,15 @@ function renderMissingCase(c, isOfficer) {
     }
     if (c.status === 'verified') {
       actions += `<button class="vote-btn" style="background:var(--red)" onclick="broadcastMissingCase(${Number(c.id)})">Broadcast…</button>`;
+      actions += `<button class="vote-btn" onclick="renewMissingCase(${Number(c.id)})">Renew 72h</button>`;
     }
     if (c.status === 'reported' || c.status === 'verified') {
       actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'found_safe')">Found safe</button>`;
       actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'found_deceased')">Found deceased</button>`;
       actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'closed_false_report')">False report</button>`;
+    }
+    if (['found_safe', 'found_deceased', 'closed_false_report'].includes(c.status) && !c.followup_sent_at) {
+      actions += `<button class="vote-btn" onclick="sendMissingFollowup(${Number(c.id)})">Send "alert closed" SMS</button>`;
     }
   }
   return `<div class="incident-row">
@@ -751,6 +804,7 @@ function renderMissingCase(c, isOfficer) {
     <small>${esc(c.physical_description)}${c.clothing_description ? ', ' + esc(c.clothing_description) : ''}</small><br>
     <small>Last seen: ${esc(c.last_seen_area || 'location on map')} — ${esc(c.last_seen_time)}</small>
     ${isOfficer ? `<br><small>Reporter: ${esc(c.reporter_phone)} (${esc(c.reporter_relationship || 'relationship not given')})</small>` : ''}
+    ${isOfficer && c.ob_number ? `<br><small>OB: ${esc(c.ob_number)} — public until ${esc(c.expires_at)} UTC</small>` : ''}
     ${actions ? `<br>${actions}` : ''}
   </div>`;
 }
@@ -780,22 +834,76 @@ async function broadcastMissingCase(id) {
   const pre = await fetch(`${API}/missing-child/cases/${id}/broadcast-preview?radius_km=${radius}`, { headers: officerHeaders() });
   const preData = await pre.json();
   if (!pre.ok) { alert(preData.detail || 'Could not prepare the broadcast.'); return; }
-  const ok = confirm(`This SMS will be sent to ${preData.recipient_count} subscriber(s) within ${radius} km:\n\n${preData.message}\n\nSend it?`);
+  // Owner may send alone; everyone else proposes and a different admin approves.
+  const alone = officerRole === 'owner';
+  const verb = alone ? 'SENT NOW' : 'PROPOSED (a different admin must approve before anything is sent)';
+  const ok = confirm(`This SMS will be ${verb} to ${preData.recipient_count} subscriber(s) within ${radius} km:\n\n${preData.message}\n\nContinue?`);
   if (!ok) return;
-  const res = await fetch(`${API}/missing-child/cases/${id}/broadcast`, {
+  const url = alone ? `${API}/missing-child/cases/${id}/broadcast` : `${API}/missing-child/cases/${id}/broadcast-proposals`;
+  const res = await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
     body: JSON.stringify({ radius_km: radius, message: preData.message })
   });
   const data = await res.json();
-  alert(res.ok
+  if (!res.ok) { alert(errMsg(data, 'Broadcast failed')); return; }
+  alert(alone
     ? `Sent to ${data.recipients_reached} subscriber(s)${data.failed_count ? ', ' + data.failed_count + ' failed' : ''}.`
-    : errMsg(data, 'Broadcast failed'));
+    : `Proposal #${data.id} created. It is sent only after a different admin approves it.`);
+  if (officerRole === 'admin' || officerRole === 'owner') loadProposals();
 }
 
 async function verifyMissingCase(id) {
-  await fetch(`${API}/missing-child/cases/${id}/verify`, { method: 'POST', headers: officerHeaders() });
+  const ob = prompt('Police OB (Occurrence Book) number for this case.\nConfirm it with the station before verifying:');
+  if (ob === null) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
+    body: JSON.stringify({ ob_number: ob })
+  });
+  if (!res.ok) alert(errMsg(await res.json(), 'Could not verify'));
   loadMissingOfficer();
   loadMissingPublic();
+}
+
+async function renewMissingCase(id) {
+  const note = prompt('Re-confirm with the police first. What did they say? (e.g. "Called Kayole station, still missing")');
+  if (note === null) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/renew`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
+    body: JSON.stringify({ note })
+  });
+  if (!res.ok) alert(errMsg(await res.json(), 'Could not renew'));
+  loadMissingOfficer();
+  loadMissingPublic();
+}
+
+async function sendMissingFollowup(id) {
+  if (!confirm('Send "this alert is closed, please disregard" to everyone who received the alert for this case?')) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/followup`, { method: 'POST', headers: officerHeaders() });
+  const data = await res.json();
+  alert(res.ok ? `Sent to ${data.recipients_reached} person(s).` : errMsg(data, 'Could not send the follow-up'));
+  loadMissingOfficer();
+}
+
+async function loadProposals() {
+  const res = await fetch(`${API}/missing-child/broadcast-proposals?status=pending`, { headers: officerHeaders() });
+  if (!res.ok) return;
+  const data = await res.json();
+  const el = document.getElementById('proposalList');
+  el.innerHTML = data.length ? data.map(p => `<div class="incident-row">
+    Proposal #${Number(p.id)} for case #${Number(p.case_id)} by ${esc(p.proposed_by)} — ${esc(p.radius_km)} km, reaches ${esc(p.recipient_count_now)} now<br>
+    <small>${esc(p.message)}</small><br>
+    ${p.proposed_by === officerUser ? '<small>You proposed this; someone else must decide.</small>' :
+      `<button class="vote-btn" style="background:var(--red)" onclick="decideProposal(${Number(p.id)}, 'approve')">Approve and send</button>
+       <button class="vote-btn" onclick="decideProposal(${Number(p.id)}, 'reject')">Reject</button>`}
+  </div>`).join('') : 'Nothing waiting.';
+}
+
+async function decideProposal(id, action) {
+  if (action === 'approve' && !confirm('Approve and SEND this alert now?')) return;
+  const res = await fetch(`${API}/missing-child/broadcast-proposals/${id}/${action}`, { method: 'POST', headers: officerHeaders() });
+  const data = await res.json();
+  alert(res.ok ? (action === 'approve' ? `Sent to ${data.recipients_reached} subscriber(s).` : 'Rejected.') : errMsg(data, 'Failed'));
+  loadProposals();
 }
 
 async function updateMissingStatus(id, status) {
@@ -823,7 +931,9 @@ setInterval(loadRecent, 15000);
 setInterval(() => {
   if (!officerToken) return;
   loadRecommended(); loadAllIncidents(); loadMissingOfficer();
+  if (officerRole === 'admin' || officerRole === 'owner') loadProposals();
 }, 20000);
+defaultVisibilityForType();
 </script>
 </body>
 </html>

@@ -33,7 +33,8 @@ def init_db():
             magnitude REAL,
             base_confidence REAL,
             vote_confirms INTEGER NOT NULL DEFAULT 0,
-            vote_disputes INTEGER NOT NULL DEFAULT 0
+            vote_disputes INTEGER NOT NULL DEFAULT 0,
+            reporter_phone_enc TEXT
         )
     """)
     # Migration for databases created before visibility/confidence scoring
@@ -52,6 +53,9 @@ def init_db():
         "base_confidence REAL",
         "vote_confirms INTEGER NOT NULL DEFAULT 0",
         "vote_disputes INTEGER NOT NULL DEFAULT 0",
+        # Crime reporter's optional phone, encrypted (src/privacy.py). Never
+        # returned by any officer endpoint; see the reveal endpoint in main.py.
+        "reporter_phone_enc TEXT",
     ):
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")
@@ -62,7 +66,30 @@ def init_db():
         CREATE TABLE IF NOT EXISTS officers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            hashed_password TEXT NOT NULL
+            hashed_password TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'officer' CHECK(role IN ('officer', 'admin', 'owner'))
+        )
+    """)
+    # Roles: officer (reviews, verifies, proposes), admin (trusted people:
+    # approves missing-child alerts, can open a crime reporter's number with
+    # a reason), owner (the founder: everything, and may send alone).
+    try:
+        conn.execute(
+            "ALTER TABLE officers ADD COLUMN role TEXT NOT NULL DEFAULT 'officer' "
+            "CHECK(role IN ('officer', 'admin', 'owner'))"
+        )
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id INTEGER,
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
     conn.execute("""
@@ -162,15 +189,24 @@ def init_db():
                 CHECK(status IN ('reported', 'verified', 'found_safe', 'found_deceased', 'closed_false_report')),
             verified_by TEXT,
             resolved_by TEXT,
+            ob_number TEXT,
+            expires_at TEXT,
+            followup_sent_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
-    try:
-        conn.execute("ALTER TABLE missing_child_cases ADD COLUMN resolved_by TEXT")
-    except sqlite3.OperationalError as e:
-        if 'duplicate column' not in str(e).lower():
-            raise
+    for col_def in (
+        "resolved_by TEXT",
+        "ob_number TEXT",         # police Occurrence Book number, required to verify
+        "expires_at TEXT",        # a verified case leaves public view at this time unless renewed
+        "followup_sent_at TEXT",  # when the "alert closed" SMS went out
+    ):
+        try:
+            conn.execute(f"ALTER TABLE missing_child_cases ADD COLUMN {col_def}")
+        except sqlite3.OperationalError as e:
+            if 'duplicate column' not in str(e).lower():
+                raise
     # Broadcast log for Missing Child Alert. Its own table (not `broadcasts`)
     # because `broadcasts.incident_id` is NOT NULL and references incidents,
     # which SQLite can't relax in place, and a case isn't an incident.
@@ -184,6 +220,35 @@ def init_db():
             failed_count INTEGER NOT NULL DEFAULT 0,
             triggered_by TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    try:
+        conn.execute("ALTER TABLE missing_child_broadcasts ADD COLUMN approved_by TEXT")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
+    # Who each missing-child alert actually reached, so the "alert closed"
+    # follow-up goes to exactly those people and nobody else.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS missing_child_broadcast_recipients (
+            broadcast_id INTEGER NOT NULL REFERENCES missing_child_broadcasts(id),
+            phone_number TEXT NOT NULL
+        )
+    """)
+    # Two-person rule: an officer or admin proposes the exact message and
+    # radius; a different admin, or the owner, approves it and it is sent.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS missing_child_broadcast_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL REFERENCES missing_child_cases(id),
+            message TEXT NOT NULL,
+            radius_km REAL NOT NULL,
+            proposed_by TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+            decided_by TEXT,
+            broadcast_id INTEGER REFERENCES missing_child_broadcasts(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            decided_at TEXT
         )
     """)
     # Populated by scripts/ingest_health_facilities.py - real hospital/clinic

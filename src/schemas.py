@@ -95,15 +95,30 @@ class IncidentReport(BaseModel):
     # Reporter-chosen visibility: "officers_only" keeps a time-critical but
     # unverified report (e.g. a witnessed crime in progress) out of the
     # public feed so the reporter isn't put at risk before responders can
-    # act. No reporter identity is ever collected on this model in the first
-    # place, so officers never see who filed an officers_only report either.
-    visibility: Literal["public", "officers_only"] = "public"
+    # act. Left out, it defaults by type: crime -> officers_only (a witness
+    # must opt IN to warning people nearby), everything else -> public.
+    visibility: Literal["public", "officers_only"] | None = None
+    # Crime only, optional: lets responders follow up if strictly needed.
+    # Stored encrypted and never shown to officers (src/privacy.py). Fire,
+    # flood and medical reports collect no identity at all.
+    reporter_phone: str | None = Field(None, max_length=30)
     # Scrappy stand-in for real evidence upload (no file storage built yet -
     # logged as a deliberate skip, see docs/architecture.md): a
     # self-attested "I have a photo/video of this" boolean that nudges
     # confidence up slightly. Lying about it is possible; it's one signal
     # among several (source trust, corroboration), not the whole score.
     has_evidence: bool = False
+
+    @field_validator("reporter_phone")
+    @classmethod
+    def _normalize_reporter_phone(cls, v: str | None) -> str | None:
+        return normalize_phone(v) if v else None
+
+    @model_validator(mode="after")
+    def _phone_only_for_crime(self):
+        if self.reporter_phone and TYPE_CATEGORY.get(self.type) != "crime":
+            raise ValueError("a phone number is only accepted on crime reports")
+        return self
 
 
 class BulkReportRequest(BaseModel):
@@ -253,6 +268,74 @@ class MissingChildCaseOfficerOut(MissingChildCaseOut):
     reporter_phone: str
     reporter_relationship: str
     verified_by: str | None
+    resolved_by: str | None = None
+    ob_number: str | None = None
+    expires_at: str | None = None
+    followup_sent_at: str | None = None
+
+
+class MissingChildVerifyRequest(BaseModel):
+    # Police Occurrence Book number, confirmed with the station by the
+    # officer. No case goes public without one.
+    ob_number: str = Field(..., min_length=3, max_length=50, examples=["OB 12/15/10/2026"])
+
+    @field_validator("ob_number")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("enter the police OB number")
+        return v
+
+
+class MissingChildRenewRequest(BaseModel):
+    # What the officer re-confirmed with the police, e.g. "called Kayole
+    # station, still missing". Logged with the renewal.
+    note: str = Field(..., min_length=5, max_length=300)
+
+
+class MissingChildProposalOut(BaseModel):
+    id: int
+    case_id: int
+    message: str
+    radius_km: float
+    proposed_by: str
+    status: str
+    decided_by: str | None
+    broadcast_id: int | None
+    created_at: str
+    decided_at: str | None
+    recipient_count_now: int | None = None
+
+
+class RevealRequest(BaseModel):
+    # Why the number is needed. Required and logged - "strictly when needed".
+    reason: str = Field(..., min_length=15, max_length=500)
+
+
+class IncidentBroadcastPreview(BaseModel):
+    incident_id: int
+    message: str
+    radius_km: float
+    recipient_count: int
+    reporter_safety_warning: str | None = None
+
+
+class NearbyIncident(BaseModel):
+    id: int
+    type: str
+    latitude: float
+    longitude: float
+    timestamp: str
+    alert_tier: str
+    distance_km: float
+
+
+class NearbyResponse(BaseModel):
+    latitude: float
+    longitude: float
+    risk: dict[str, dict]  # category -> {"risk_score", "severity"}
+    incidents: list[NearbyIncident]
 
 
 class MissingChildStatusUpdate(BaseModel):

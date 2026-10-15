@@ -12,11 +12,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from src.auth import authenticate_officer, create_access_token, get_current_officer
+from src.auth import (authenticate_officer, create_access_token, get_current_account, get_current_officer,
+                      require_role)
 from src.broadcast import get_provider, phone_key, select_targets, send_all
 from src.confidence import alert_tier, fire_detection_tier, is_within_known_flood_zone, with_votes
 from src.database import get_connection, init_db
 from src.geo import haversine_km
+from src.privacy import (PUBLIC_INCIDENT_SQL, decrypt, encrypt, encryption_available, is_crime, log_action,
+                         public_incident)
 from src.reflex import reflex_assessment
 from src.risk_surface import point_risk, risk_cells
 from src.routing import find_safe_route
@@ -26,6 +29,7 @@ from src.schemas import (
     BroadcastResponse,
     BulkReportRequest,
     HealthFacilityOut,
+    IncidentBroadcastPreview,
     IncidentOut,
     IncidentReport,
     MissingChildBroadcastPreview,
@@ -33,21 +37,33 @@ from src.schemas import (
     MissingChildBroadcastResponse,
     MissingChildCaseOfficerOut,
     MissingChildCaseOut,
+    MissingChildProposalOut,
+    MissingChildRenewRequest,
     MissingChildReport,
     MissingChildStatusUpdate,
+    MissingChildVerifyRequest,
+    NearbyIncident,
+    NearbyResponse,
     PredictionRequest,
     PredictionResponse,
+    RevealRequest,
     RiskHeatmapResponse,
     SafeRouteRequest,
     SafeRouteResponse,
     SubscriberIn,
     SERVICE_AREA,
     VoteRequest,
+    check_in_service_area,
 )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    if not encryption_available():
+        print(
+            "WARNING: EIS_DATA_KEY not set - crime reporters' phone numbers will NOT be stored. "
+            "Generate one with scripts/generate_keys.py and keep an offline copy."
+        )
     yield
 
 
@@ -119,6 +135,13 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     return {"access_token": token, "token_type": "bearer"}
 
 
+@app.get("/me")
+def whoami(account: dict = Depends(get_current_account)):
+    """The signed-in account's username and role, so the console can show
+    only the buttons this role may use. The server still checks every action."""
+    return account
+
+
 # -------------------------------------------------------------------
 # Prediction
 # -------------------------------------------------------------------
@@ -163,7 +186,7 @@ def safe_route(request: Request, body: SafeRouteRequest):
 # Incident ingestion (citizen reports are public; officer/bulk require auth)
 # -------------------------------------------------------------------
 
-def _insert_incident(source: str, report: IncidentReport, background_tasks: BackgroundTasks) -> int:
+def _insert_incident(source: str, report: IncidentReport, background_tasks: BackgroundTasks) -> tuple[int, bool]:
     """
     Reflex-first ingestion: an instant, bounded-cost assessment (source
     trust, evidence, known-flood-zone check - see src/reflex.py) is what
@@ -175,6 +198,11 @@ def _insert_incident(source: str, report: IncidentReport, background_tasks: Back
     scan; see docs/architecture.md for the reasoning and the R&D behind it.
     """
     incident_type = report.type.strip().lower()
+    # Crime defaults to officers-only: a witness opts IN to warning people
+    # nearby, never has to remember to opt out.
+    visibility = report.visibility or ("officers_only" if is_crime(incident_type) else "public")
+    phone_enc = encrypt(report.reporter_phone) if report.reporter_phone else None
+
     conn = get_connection()
     flood_zone_hit = is_within_known_flood_zone(conn, incident_type, report.latitude, report.longitude)
     confidence, tier = reflex_assessment(source, incident_type, report.has_evidence, flood_zone_hit)
@@ -182,11 +210,12 @@ def _insert_incident(source: str, report: IncidentReport, background_tasks: Back
     cursor = conn.execute(
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
-            visibility, has_evidence, base_confidence, confidence_score, corroboration_count, alert_tier)
-           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)""",
+            visibility, has_evidence, base_confidence, confidence_score, corroboration_count, alert_tier,
+            reporter_phone_enc)
+           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (source, incident_type, report.area.strip(),
          report.latitude, report.longitude, report.description, report.timestamp,
-         report.visibility, int(report.has_evidence), confidence, confidence, 0, tier),
+         visibility, int(report.has_evidence), confidence, confidence, 0, tier, phone_enc),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -196,25 +225,34 @@ def _insert_incident(source: str, report: IncidentReport, background_tasks: Back
         refine_incident, new_id, source, incident_type,
         report.latitude, report.longitude, report.timestamp, report.has_evidence,
     )
-    return new_id
+    return new_id, phone_enc is not None
+
+
+def _received(incident_id: int, report: IncidentReport, phone_stored: bool, **extra) -> dict:
+    out = {"status": "received", "incident_id": incident_id, **extra}
+    if report.reporter_phone:
+        # Said plainly rather than dropped silently: without EIS_DATA_KEY the
+        # number is not kept, and the reporter should know nobody can call back.
+        out["phone_stored"] = phone_stored
+    return out
 
 
 @app.post("/report/citizen")
 @limiter.limit("10/minute")
 def report_citizen(request: Request, report: IncidentReport, background_tasks: BackgroundTasks):
-    incident_id = _insert_incident("citizen", report, background_tasks)
-    return {"status": "received", "incident_id": incident_id}
+    incident_id, phone_stored = _insert_incident("citizen", report, background_tasks)
+    return _received(incident_id, report, phone_stored)
 
 
 @app.post("/report/officer")
 def report_officer(report: IncidentReport, background_tasks: BackgroundTasks, officer: str = Depends(get_current_officer)):
-    incident_id = _insert_incident("officer", report, background_tasks)
-    return {"status": "received", "incident_id": incident_id, "logged_by": officer}
+    incident_id, phone_stored = _insert_incident("officer", report, background_tasks)
+    return _received(incident_id, report, phone_stored, logged_by=officer)
 
 
 @app.post("/report/bulk")
 def report_bulk(request: BulkReportRequest, background_tasks: BackgroundTasks, officer: str = Depends(get_current_officer)):
-    ids = [_insert_incident("bulk", r, background_tasks) for r in request.reports]
+    ids = [_insert_incident("bulk", r, background_tasks)[0] for r in request.reports]
     return {"status": "received", "count": len(ids), "incident_ids": ids, "logged_by": officer}
 
 
@@ -243,8 +281,10 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
     # Write transaction from the read onward: two votes arriving together, or
     # a vote racing the strategic pass, must not overwrite each other.
     conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
-    if row is None or row["visibility"] == "officers_only":
+    # Same rule as the public feed: officers-only rows, and crime rows still
+    # inside their delay, look exactly like rows that don't exist.
+    row = conn.execute(f"SELECT * FROM incidents WHERE id = ? AND {PUBLIC_INCIDENT_SQL}", (incident_id,)).fetchone()
+    if row is None:
         conn.rollback()
         conn.close()
         raise HTTPException(status_code=404, detail="Incident not found")
@@ -271,7 +311,7 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
     conn.commit()
     updated = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
     conn.close()
-    return IncidentOut(**dict(updated))
+    return IncidentOut(**public_incident(dict(updated)))
 
 
 @app.get("/incidents", response_model=list[IncidentOut])
@@ -282,13 +322,88 @@ def list_incidents(limit: int = Query(100, ge=1, le=500)):
     progress) can reach responders without immediately broadcasting their
     report - and by extension, their position - to everyone, including
     whoever they just reported. See /incidents/all for the officer view.
+    Public crime reports also wait out a delay and show a blurred location
+    (src/privacy.py).
     """
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM incidents WHERE visibility = 'public' ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT * FROM incidents WHERE {PUBLIC_INCIDENT_SQL} ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     conn.close()
-    return [IncidentOut(**dict(row)) for row in rows]
+    return [IncidentOut(**public_incident(dict(row))) for row in rows]
+
+
+@app.post("/incidents/{incident_id}/reveal-reporter")
+def reveal_crime_reporter(incident_id: int, body: RevealRequest,
+                          account: dict = Depends(require_role("admin"))):
+    """Opens a crime reporter's phone number - admin or owner only, with a
+    written reason. The opening is logged (who, when, why) in the same
+    transaction that reads the number, so there is no unlogged path."""
+    conn = get_connection()
+    row = conn.execute("SELECT reporter_phone_enc FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    if row is None or not row["reporter_phone_enc"]:
+        conn.close()
+        raise HTTPException(status_code=404, detail="No reporter number on file for this incident")
+    try:
+        phone = decrypt(row["reporter_phone_enc"])
+    except Exception:
+        conn.close()
+        raise HTTPException(status_code=503, detail="The number can't be opened: EIS_DATA_KEY is missing or wrong")
+    log_action(conn, account["username"], "reveal_reporter_phone", "incident", incident_id, body.reason.strip())
+    conn.commit()
+    conn.close()
+    return {"incident_id": incident_id, "reporter_phone": phone}
+
+
+@app.get("/audit-log")
+def read_audit_log(limit: int = Query(200, ge=1, le=1000), account: dict = Depends(require_role("owner"))):
+    """Every sensitive action, newest first. Owner only."""
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+NEARBY_RADIUS_KM = 2.0
+NEARBY_DAYS = 7
+# One representative type per category: point_risk filters by the type's category.
+_CATEGORY_PROBE = {"crime": "robbery", "hazard": "flood", "medical": "medical_emergency"}
+
+
+@app.get("/nearby", response_model=NearbyResponse)
+@limiter.limit("30/minute")
+def nearby(request: Request, latitude: float, longitude: float):
+    """Everything the "Am I safe here?" screen needs in one small request:
+    modelled risk per category at this point, plus public incidents from the
+    last week within 2 km (crime blurred and delayed, as everywhere)."""
+    try:
+        check_in_service_area(latitude, longitude)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    risk = {}
+    for category, probe in _CATEGORY_PROBE.items():
+        score, severity = point_risk(latitude, longitude, probe)
+        risk[category] = {"risk_score": round(score, 3), "severity": severity}
+
+    box = NEARBY_RADIUS_KM / 100  # degrees; a generous prefilter, exact distance below
+    conn = get_connection()
+    rows = conn.execute(
+        f"SELECT * FROM incidents WHERE {PUBLIC_INCIDENT_SQL} "
+        f"AND created_at >= datetime('now', '-{NEARBY_DAYS} days') "
+        "AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?",
+        (latitude - box, latitude + box, longitude - box, longitude + box),
+    ).fetchall()
+    conn.close()
+    found = []
+    for r in rows:
+        p = public_incident(dict(r))
+        d = haversine_km(latitude, longitude, p["latitude"], p["longitude"])
+        if d <= NEARBY_RADIUS_KM:
+            found.append(NearbyIncident(id=p["id"], type=p["type"], latitude=p["latitude"],
+                                        longitude=p["longitude"], timestamp=p["timestamp"],
+                                        alert_tier=p["alert_tier"], distance_km=round(d, 2)))
+    found.sort(key=lambda i: i.distance_km)
+    return NearbyResponse(latitude=latitude, longitude=longitude, risk=risk, incidents=found[:50])
 
 
 @app.get("/incidents/all", response_model=list[IncidentOut])
@@ -370,6 +485,33 @@ def add_subscriber(request: Request, sub: SubscriberIn):
     return {"status": status}
 
 
+OFFICERS_ONLY_WARNING = (
+    "This report was originally officers_only - the reporter chose that "
+    "to stay safe. Make sure your broadcast message doesn't include "
+    "enough specific detail (exact time, vantage point, distinctive "
+    "circumstances) to let someone work out who reported it."
+)
+
+
+@app.post("/alert/broadcast-preview", response_model=IncidentBroadcastPreview)
+def preview_broadcast(request: BroadcastRequest, officer: str = Depends(get_current_officer)):
+    """What /alert/broadcast WOULD do, without sending: the exact message and
+    how many people it reaches. Shown before the officer confirms."""
+    conn = get_connection()
+    incident = conn.execute("SELECT * FROM incidents WHERE id = ?", (request.incident_id,)).fetchone()
+    if incident is None or incident["latitude"] is None or incident["longitude"] is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Incident not found or has no location")
+    subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
+    conn.close()
+    targets = select_targets(subscribers, incident["latitude"], incident["longitude"], request.radius_km)
+    return IncidentBroadcastPreview(
+        incident_id=request.incident_id, message=request.message, radius_km=request.radius_km,
+        recipient_count=len(targets),
+        reporter_safety_warning=OFFICERS_ONLY_WARNING if incident["visibility"] == "officers_only" else None,
+    )
+
+
 @app.post("/alert/broadcast", response_model=BroadcastResponse)
 def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_current_officer)):
     """
@@ -413,18 +555,13 @@ def trigger_broadcast(request: BroadcastRequest, officer: str = Depends(get_curr
         "VALUES (?, ?, ?, ?, ?, ?)",
         (request.incident_id, request.message, request.radius_km, sent, failed, officer),
     )
-    conn.commit()
     broadcast_id = cursor.lastrowid
+    log_action(conn, officer, "incident_broadcast", "incident", request.incident_id,
+               f"broadcast {broadcast_id}: {sent} sent, {failed} failed, {request.radius_km} km")
+    conn.commit()
     conn.close()
 
-    warning = None
-    if incident["visibility"] == "officers_only":
-        warning = (
-            "This report was originally officers_only - the reporter chose that "
-            "to stay safe. Make sure your broadcast message doesn't include "
-            "enough specific detail (exact time, vantage point, distinctive "
-            "circumstances) to let someone work out who reported it."
-        )
+    warning = OFFICERS_ONLY_WARNING if incident["visibility"] == "officers_only" else None
 
     return BroadcastResponse(
         broadcast_id=broadcast_id,
@@ -488,7 +625,7 @@ def risk_heatmap(request: Request, lat_min: float, lon_min: float, lat_max: floa
 @app.get("/facilities/nearest", response_model=list[HealthFacilityOut])
 @limiter.limit("30/minute")
 def nearest_facilities(request: Request, latitude: float, longitude: float,
-                        limit: int = 5, emergency_only: bool = False):
+                        limit: int = Query(5, ge=1, le=50), emergency_only: bool = False):
     conn = get_connection()
     query = "SELECT * FROM health_facilities"
     if emergency_only:
@@ -505,7 +642,7 @@ def nearest_facilities(request: Request, latitude: float, longitude: float,
 
 
 @app.get("/facilities", response_model=list[HealthFacilityOut])
-def list_facilities(limit: int = 2000):
+def list_facilities(limit: int = Query(2000, ge=1, le=5000)):
     conn = get_connection()
     rows = conn.execute("SELECT * FROM health_facilities LIMIT ?", (limit,)).fetchall()
     conn.close()
@@ -544,20 +681,28 @@ def report_missing_child(request: Request, report: MissingChildReport):
     return {"status": "received", "case_id": new_id}
 
 
+# A verified case leaves public view after this long unless an officer
+# re-confirms it with the police and renews it.
+CASE_TTL_HOURS = 72
+ACTIVE_CASE_SQL = "status = 'verified' AND expires_at > datetime('now')"
+
+
 @app.get("/missing-child/cases", response_model=list[MissingChildCaseOut])
 def list_missing_child_cases():
-    """Public feed - only verified cases (an active search worth the public
-    knowing about) and found_safe resolutions (good news, appropriate to
-    share). Never 'reported' (unverified), 'found_deceased' (needs a human-
-    mediated, not automated, channel), or 'closed_false_report' (no reason
-    to have ever surfaced it, and no reason to publicly flag a false
-    report against whoever filed it)."""
+    """Public feed - only active verified cases (an active search worth the
+    public knowing about) and found_safe resolutions of verified cases (good
+    news, appropriate to share). Never 'reported' (unverified),
+    'found_deceased' (needs a human-mediated, not automated, channel),
+    'closed_false_report', or a verified case past its expiry: a stale
+    listing for a child who may already be home is its own harm, so a case
+    leaves public view after CASE_TTL_HOURS unless an officer re-confirms it
+    with the police and renews it."""
     conn = get_connection()
     rows = conn.execute(
         # found_safe is public only if the case was verified first. A case
         # closed as found_safe straight from 'reported' was never checked, so
         # publishing it would put an unverified child's details on the feed.
-        "SELECT * FROM missing_child_cases WHERE status = 'verified' "
+        f"SELECT * FROM missing_child_cases WHERE ({ACTIVE_CASE_SQL}) "
         "OR (status = 'found_safe' AND verified_by IS NOT NULL) "
         "ORDER BY created_at DESC"
     ).fetchall()
@@ -573,21 +718,55 @@ def list_missing_child_cases_all(officer: str = Depends(get_current_officer)):
     return [MissingChildCaseOfficerOut(**dict(r)) for r in rows]
 
 
-@app.post("/missing-child/cases/{case_id}/verify", response_model=MissingChildCaseOfficerOut)
-def verify_missing_child_case(case_id: int, officer: str = Depends(get_current_officer)):
-    conn = get_connection()
+def _get_case_or_404(conn, case_id: int):
     row = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
     if row is None:
         conn.close()
         raise HTTPException(status_code=404, detail="Case not found")
+    return row
+
+
+@app.post("/missing-child/cases/{case_id}/verify", response_model=MissingChildCaseOfficerOut)
+def verify_missing_child_case(case_id: int, body: MissingChildVerifyRequest,
+                              officer: str = Depends(get_current_officer)):
+    """Makes a case public. Needs the police Occurrence Book number, which the
+    officer confirms with the station first: a missing-child alert can be
+    weaponised (custody disputes, a child who fled abuse), and the OB number
+    ties every public case to a real police report."""
+    conn = get_connection()
+    row = _get_case_or_404(conn, case_id)
     if row["status"] != "reported":
         conn.close()
         raise HTTPException(status_code=400, detail=f"Case is already '{row['status']}', not pending verification")
 
     conn.execute(
-        "UPDATE missing_child_cases SET status = 'verified', verified_by = ?, updated_at = datetime('now') WHERE id = ?",
-        (officer, case_id),
+        "UPDATE missing_child_cases SET status = 'verified', verified_by = ?, ob_number = ?, "
+        f"expires_at = datetime('now', '+{CASE_TTL_HOURS} hours'), updated_at = datetime('now') WHERE id = ?",
+        (officer, body.ob_number, case_id),
     )
+    log_action(conn, officer, "verify_missing_child", "missing_child_case", case_id, f"OB {body.ob_number}")
+    conn.commit()
+    updated = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
+    conn.close()
+    return MissingChildCaseOfficerOut(**dict(updated))
+
+
+@app.post("/missing-child/cases/{case_id}/renew", response_model=MissingChildCaseOfficerOut)
+def renew_missing_child_case(case_id: int, body: MissingChildRenewRequest,
+                             officer: str = Depends(get_current_officer)):
+    """Keeps a verified case public for another CASE_TTL_HOURS, after the
+    officer re-confirms with the police that the child is still missing."""
+    conn = get_connection()
+    row = _get_case_or_404(conn, case_id)
+    if row["status"] != "verified":
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Only verified cases can be renewed; this one is '{row['status']}'")
+    conn.execute(
+        f"UPDATE missing_child_cases SET expires_at = datetime('now', '+{CASE_TTL_HOURS} hours'), "
+        "updated_at = datetime('now') WHERE id = ?",
+        (case_id,),
+    )
+    log_action(conn, officer, "renew_missing_child", "missing_child_case", case_id, body.note.strip())
     conn.commit()
     updated = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
     conn.close()
@@ -598,10 +777,7 @@ def verify_missing_child_case(case_id: int, officer: str = Depends(get_current_o
 def update_missing_child_case_status(case_id: int, update: MissingChildStatusUpdate,
                                       officer: str = Depends(get_current_officer)):
     conn = get_connection()
-    row = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
-    if row is None:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Case not found")
+    row = _get_case_or_404(conn, case_id)
     if row["status"] in ("found_safe", "found_deceased", "closed_false_report"):
         conn.close()
         raise HTTPException(status_code=400, detail=f"Case is already resolved as '{row['status']}'")
@@ -613,6 +789,13 @@ def update_missing_child_case_status(case_id: int, update: MissingChildStatusUpd
         "updated_at = datetime('now') WHERE id = ?",
         (update.status, officer, case_id),
     )
+    # Proposals for a closed case must never be approved later.
+    conn.execute(
+        "UPDATE missing_child_broadcast_proposals SET status = 'rejected', decided_by = ?, "
+        "decided_at = datetime('now') WHERE case_id = ? AND status = 'pending'",
+        (officer, case_id),
+    )
+    log_action(conn, officer, "resolve_missing_child", "missing_child_case", case_id, update.status)
     conn.commit()
     updated = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
     conn.close()
@@ -620,20 +803,29 @@ def update_missing_child_case_status(case_id: int, update: MissingChildStatusUpd
 
 
 # -- Missing Child Alert: geo-targeted broadcast ------------------------------
-# The reach is the point of this feature. Human-in-the-loop preserved: an
-# officer sees the exact message and how many people it would reach BEFORE
-# anything is sent, and only a VERIFIED case can be broadcast at all.
+# The reach is the point of this feature, and a wrong alert is how this
+# project gets sued. So: only a verified, unexpired case; the message names
+# the child by first name only; and it takes two people. An officer or admin
+# PROPOSES the exact message and radius; a different admin, or the owner,
+# APPROVES it and only then is it sent. The owner may also send alone.
 
 ALERT_CONTACT = os.environ.get("EIS_ALERT_CONTACT", "999 or 112")
 SMS_MAX = 300
 
 
+def _first_name(full_name: str) -> str:
+    parts = full_name.strip().split()
+    return parts[0] if parts else full_name.strip()
+
+
 def _compose_missing_child_message(case) -> str:
     """Built ONLY from public case fields - never the reporter's phone or
-    relationship. Trimmed to fit one 300-char message: the fixed parts
-    (who, where, what to do) always survive; description/clothing are cut
-    first if it's too long."""
-    who = case["child_name"] + (f", {case['age']}" if case["age"] is not None else "")
+    relationship - and with the child's FIRST name only: an SMS can be
+    forwarded anywhere and never recalled, so it carries the least that
+    still lets someone recognise the child. Trimmed to fit one 300-char
+    message: the fixed parts (who, where, what to do) always survive;
+    description/clothing are cut first if it's too long."""
+    who = _first_name(case["child_name"]) + (f", {case['age']}" if case["age"] is not None else "")
     where = case["last_seen_area"] or "nearby"
     tail = f" Last seen {where} at {case['last_seen_time']}. If seen call {ALERT_CONTACT}."
     head = f"MISSING CHILD: {who}."
@@ -646,24 +838,65 @@ def _compose_missing_child_message(case) -> str:
     return f"{head} {details}.{tail}" if details else f"{head}{tail}"
 
 
+def _compose_followup_message(case) -> str:
+    # Neutral on purpose: the same words fit found safe, found deceased and
+    # a false report, and none of those outcomes belongs in a mass SMS.
+    return (f"UPDATE: the missing-child alert for {_first_name(case['child_name'])} is now closed. "
+            "Please disregard it. Thank you for your help.")
+
+
 def _message_contains_phone(message: str, phone: str) -> bool:
     key = phone_key(phone)
     digits = "".join(ch for ch in message if ch.isdigit())
     return len(key) >= 7 and key in digits
 
 
-def _get_verified_case_or_error(conn, case_id: int):
-    case = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (case_id,)).fetchone()
-    if case is None:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Case not found")
+def _get_broadcastable_case_or_error(conn, case_id: int):
+    case = _get_case_or_404(conn, case_id)
     if case["status"] != "verified":
         conn.close()
         raise HTTPException(
             status_code=400,
             detail=f"Only verified cases can be broadcast; this one is '{case['status']}'",
         )
+    active = conn.execute(f"SELECT 1 FROM missing_child_cases WHERE id = ? AND {ACTIVE_CASE_SQL}", (case_id,)).fetchone()
+    if active is None:
+        conn.close()
+        raise HTTPException(status_code=400, detail="This case has expired; re-confirm with the police and renew it first")
     return case
+
+
+def _checked_message(conn, case, message: str | None) -> str:
+    message = message or _compose_missing_child_message(case)
+    if _message_contains_phone(message, case["reporter_phone"]):
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="Message contains the reporter's phone number. Reporter contact must never be broadcast.",
+        )
+    return message
+
+
+def _send_missing_child_broadcast(conn, case, message: str, radius_km: float, triggered_by: str,
+                                  approved_by: str) -> tuple[int, int, int]:
+    """Sends, records the broadcast and who it reached. Returns (broadcast_id, sent, failed).
+    The caller commits."""
+    subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
+    targets = select_targets(subscribers, case["last_seen_latitude"], case["last_seen_longitude"], radius_km)
+    delivered: list[str] = []
+    sent, failed = send_all(get_provider(), targets, message, delivered)
+    cursor = conn.execute(
+        "INSERT INTO missing_child_broadcasts "
+        "(case_id, message, radius_km, recipient_count, failed_count, triggered_by, approved_by) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (case["id"], message, radius_km, sent, failed, triggered_by, approved_by),
+    )
+    broadcast_id = cursor.lastrowid
+    conn.executemany(
+        "INSERT INTO missing_child_broadcast_recipients (broadcast_id, phone_number) VALUES (?, ?)",
+        [(broadcast_id, p) for p in delivered],
+    )
+    return broadcast_id, sent, failed
 
 
 @app.get("/missing-child/cases/{case_id}/broadcast-preview", response_model=MissingChildBroadcastPreview)
@@ -672,7 +905,7 @@ def preview_missing_child_broadcast(case_id: int, radius_km: float = 10.0,
     if not (0 < radius_km <= 100):
         raise HTTPException(status_code=400, detail="radius_km must be between 0 and 100")
     conn = get_connection()
-    case = _get_verified_case_or_error(conn, case_id)
+    case = _get_broadcastable_case_or_error(conn, case_id)
     subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
     conn.close()
     targets = select_targets(subscribers, case["last_seen_latitude"], case["last_seen_longitude"], radius_km)
@@ -681,34 +914,163 @@ def preview_missing_child_broadcast(case_id: int, radius_km: float = 10.0,
     )
 
 
+def _proposal_out(conn, row) -> MissingChildProposalOut:
+    out = MissingChildProposalOut(**dict(row))
+    if row["status"] == "pending":
+        case = conn.execute("SELECT * FROM missing_child_cases WHERE id = ?", (row["case_id"],)).fetchone()
+        subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
+        out.recipient_count_now = len(select_targets(
+            subscribers, case["last_seen_latitude"], case["last_seen_longitude"], row["radius_km"]))
+    return out
+
+
+@app.post("/missing-child/cases/{case_id}/broadcast-proposals", response_model=MissingChildProposalOut)
+def propose_missing_child_broadcast(case_id: int, body: MissingChildBroadcastRequest,
+                                    officer: str = Depends(get_current_officer)):
+    """Step one of the two-person rule: fixes the exact message and radius
+    that the approver will see and that will be sent. Nothing is sent yet."""
+    conn = get_connection()
+    case = _get_broadcastable_case_or_error(conn, case_id)
+    message = _checked_message(conn, case, body.message)
+    cursor = conn.execute(
+        "INSERT INTO missing_child_broadcast_proposals (case_id, message, radius_km, proposed_by) VALUES (?, ?, ?, ?)",
+        (case_id, message, body.radius_km, officer),
+    )
+    proposal_id = cursor.lastrowid
+    log_action(conn, officer, "propose_missing_child_broadcast", "missing_child_case", case_id,
+               f"proposal {proposal_id}, {body.radius_km} km")
+    conn.commit()
+    row = conn.execute("SELECT * FROM missing_child_broadcast_proposals WHERE id = ?", (proposal_id,)).fetchone()
+    out = _proposal_out(conn, row)
+    conn.close()
+    return out
+
+
+@app.get("/missing-child/broadcast-proposals", response_model=list[MissingChildProposalOut])
+def list_missing_child_proposals(status: Literal["pending", "approved", "rejected"] | None = "pending",
+                                 officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    if status:
+        rows = conn.execute("SELECT * FROM missing_child_broadcast_proposals WHERE status = ? ORDER BY id DESC",
+                            (status,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM missing_child_broadcast_proposals ORDER BY id DESC LIMIT 100").fetchall()
+    out = [_proposal_out(conn, r) for r in rows]
+    conn.close()
+    return out
+
+
+def _get_pending_proposal(conn, proposal_id: int, account: dict):
+    conn.execute("BEGIN IMMEDIATE")  # two approvers clicking at once must not send twice
+    row = conn.execute("SELECT * FROM missing_child_broadcast_proposals WHERE id = ?", (proposal_id,)).fetchone()
+    if row is None:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    if row["status"] != "pending":
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Proposal is already '{row['status']}'")
+    if row["proposed_by"] == account["username"]:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=403, detail="You proposed this alert; a different person must decide on it")
+    return row
+
+
+@app.post("/missing-child/broadcast-proposals/{proposal_id}/approve", response_model=MissingChildBroadcastResponse)
+def approve_missing_child_broadcast(proposal_id: int, account: dict = Depends(require_role("admin"))):
+    """Step two: a different admin, or the owner, approves and the proposal's
+    exact message is sent to the radius it named."""
+    conn = get_connection()
+    proposal = _get_pending_proposal(conn, proposal_id, account)
+    case = conn.execute(
+        f"SELECT * FROM missing_child_cases WHERE id = ? AND {ACTIVE_CASE_SQL}", (proposal["case_id"],)
+    ).fetchone()
+    if case is None:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=400, detail="The case is no longer verified and active; nothing was sent")
+    broadcast_id, sent, failed = _send_missing_child_broadcast(
+        conn, case, proposal["message"], proposal["radius_km"], proposal["proposed_by"], account["username"])
+    conn.execute(
+        "UPDATE missing_child_broadcast_proposals SET status = 'approved', decided_by = ?, broadcast_id = ?, "
+        "decided_at = datetime('now') WHERE id = ?",
+        (account["username"], broadcast_id, proposal_id),
+    )
+    log_action(conn, account["username"], "approve_missing_child_broadcast", "missing_child_case", case["id"],
+               f"proposal {proposal_id} by {proposal['proposed_by']}: {sent} sent, {failed} failed")
+    conn.commit()
+    conn.close()
+    return MissingChildBroadcastResponse(
+        broadcast_id=broadcast_id, recipients_reached=sent, failed_count=failed,
+        radius_km=proposal["radius_km"], message=proposal["message"],
+    )
+
+
+@app.post("/missing-child/broadcast-proposals/{proposal_id}/reject", response_model=MissingChildProposalOut)
+def reject_missing_child_broadcast(proposal_id: int, account: dict = Depends(require_role("admin"))):
+    conn = get_connection()
+    proposal = _get_pending_proposal(conn, proposal_id, account)
+    conn.execute(
+        "UPDATE missing_child_broadcast_proposals SET status = 'rejected', decided_by = ?, "
+        "decided_at = datetime('now') WHERE id = ?",
+        (account["username"], proposal_id),
+    )
+    log_action(conn, account["username"], "reject_missing_child_broadcast", "missing_child_case",
+               proposal["case_id"], f"proposal {proposal_id} by {proposal['proposed_by']}")
+    conn.commit()
+    row = conn.execute("SELECT * FROM missing_child_broadcast_proposals WHERE id = ?", (proposal_id,)).fetchone()
+    out = _proposal_out(conn, row)
+    conn.close()
+    return out
+
+
 @app.post("/missing-child/cases/{case_id}/broadcast", response_model=MissingChildBroadcastResponse)
 def broadcast_missing_child(case_id: int, body: MissingChildBroadcastRequest,
-                             officer: str = Depends(get_current_officer)):
+                             account: dict = Depends(require_role("owner"))):
+    """Owner only: sends without a second person. Everyone else proposes."""
     conn = get_connection()
-    case = _get_verified_case_or_error(conn, case_id)
-    message = body.message or _compose_missing_child_message(case)
-    if _message_contains_phone(message, case["reporter_phone"]):
-        conn.close()
-        raise HTTPException(
-            status_code=400,
-            detail="Message contains the reporter's phone number. Reporter contact must never be broadcast.",
-        )
-
-    subscribers = conn.execute("SELECT * FROM subscribers").fetchall()
-    targets = select_targets(subscribers, case["last_seen_latitude"], case["last_seen_longitude"], body.radius_km)
-    sent, failed = send_all(get_provider(), targets, message)
-    cursor = conn.execute(
-        "INSERT INTO missing_child_broadcasts (case_id, message, radius_km, recipient_count, failed_count, triggered_by) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (case_id, message, body.radius_km, sent, failed, officer),
-    )
+    case = _get_broadcastable_case_or_error(conn, case_id)
+    message = _checked_message(conn, case, body.message)
+    broadcast_id, sent, failed = _send_missing_child_broadcast(
+        conn, case, message, body.radius_km, account["username"], account["username"])
+    log_action(conn, account["username"], "owner_missing_child_broadcast", "missing_child_case", case_id,
+               f"broadcast {broadcast_id}: {sent} sent, {failed} failed")
     conn.commit()
-    broadcast_id = cursor.lastrowid
     conn.close()
     return MissingChildBroadcastResponse(
         broadcast_id=broadcast_id, recipients_reached=sent, failed_count=failed,
         radius_km=body.radius_km, message=message,
     )
+
+
+@app.post("/missing-child/cases/{case_id}/followup")
+def send_missing_child_followup(case_id: int, officer: str = Depends(get_current_officer)):
+    """After a case is resolved, tells exactly the people who got the alert
+    that it is closed. Once per case."""
+    conn = get_connection()
+    case = _get_case_or_404(conn, case_id)
+    if case["status"] not in ("found_safe", "found_deceased", "closed_false_report"):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Resolve the case first (found safe, found deceased or false report)")
+    if case["followup_sent_at"]:
+        conn.close()
+        raise HTTPException(status_code=400, detail="The follow-up was already sent")
+    phones = [r["phone_number"] for r in conn.execute(
+        "SELECT DISTINCT r.phone_number FROM missing_child_broadcast_recipients r "
+        "JOIN missing_child_broadcasts b ON b.id = r.broadcast_id WHERE b.case_id = ?", (case_id,)
+    ).fetchall()]
+    if not phones:
+        conn.close()
+        raise HTTPException(status_code=400, detail="No alert reached anyone for this case, so there is no one to update")
+    message = _compose_followup_message(case)
+    sent, failed = send_all(get_provider(), [{"phone_number": p} for p in phones], message)
+    conn.execute("UPDATE missing_child_cases SET followup_sent_at = datetime('now') WHERE id = ?", (case_id,))
+    log_action(conn, officer, "missing_child_followup", "missing_child_case", case_id, f"{sent} sent, {failed} failed")
+    conn.commit()
+    conn.close()
+    return {"case_id": case_id, "message": message, "recipients_reached": sent, "failed_count": failed}
 
 
 @app.get("/missing-child/broadcasts")

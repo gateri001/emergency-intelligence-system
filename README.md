@@ -24,14 +24,17 @@ python scripts/ingest_unosat_flood.py
 python scripts/ingest_firms.py
 python scripts/ingest_health_facilities.py
 
-# create an officer login (no default credentials ship in source)
-python scripts/create_officer.py <your-username>
+# create logins (no default credentials ship in source). Roles:
+# officer (default), admin (approves missing-child alerts, opens a crime
+# reporter's number with a logged reason), owner (everything, sends alone)
+python scripts/create_officer.py <your-username> --role owner
 
-# set a real JWT signing secret - without this, a random one is generated
-# per process start and officer sessions won't survive a restart. Never
-# commit the real value.
-set EIS_SECRET_KEY=<32+ random bytes>          # Windows cmd
-$env:EIS_SECRET_KEY = "<32+ random bytes>"     # PowerShell
+# secrets: prints fresh EIS_SECRET_KEY (signs logins) and EIS_DATA_KEY
+# (encrypts crime reporters' phone numbers). LOSING EIS_DATA_KEY MEANS THE
+# STORED NUMBERS ARE GONE FOR GOOD: keep an offline copy. Never commit them.
+python scripts/generate_keys.py
+$env:EIS_SECRET_KEY = "<value>"     # PowerShell
+$env:EIS_DATA_KEY = "<value>"
 
 # run the API
 uvicorn src.main:app --reload

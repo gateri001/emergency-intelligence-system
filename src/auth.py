@@ -54,7 +54,14 @@ def create_access_token(subject: str) -> str:
     return jwt.encode({"sub": subject, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_officer(token: str = Depends(oauth2_scheme)) -> str:
+ROLE_RANK = {"officer": 1, "admin": 2, "owner": 3}
+
+
+def get_current_account(token: str = Depends(oauth2_scheme)) -> dict:
+    """{'username', 'role'} for a valid token. The account is looked up on
+    every request rather than trusted from the token, so deleting an account
+    or changing its role takes effect at once instead of after the token's
+    8 hours run out."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired credentials",
@@ -62,9 +69,28 @@ def get_current_officer(token: str = Depends(oauth2_scheme)) -> str:
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str | None = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        return username
     except PyJWTError:
         raise credentials_exception
+    username = payload.get("sub")
+    if username is None:
+        raise credentials_exception
+    conn = get_connection()
+    row = conn.execute("SELECT username, role FROM officers WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    if row is None:
+        raise credentials_exception
+    return {"username": row["username"], "role": row["role"]}
+
+
+def get_current_officer(account: dict = Depends(get_current_account)) -> str:
+    """Any signed-in account (officer, admin or owner); returns the username."""
+    return account["username"]
+
+
+def require_role(minimum: str):
+    """Dependency: the signed-in account must hold `minimum` or a higher role."""
+    def dependency(account: dict = Depends(get_current_account)) -> dict:
+        if ROLE_RANK[account["role"]] < ROLE_RANK[minimum]:
+            raise HTTPException(status_code=403, detail=f"This needs the '{minimum}' role or higher")
+        return account
+    return dependency

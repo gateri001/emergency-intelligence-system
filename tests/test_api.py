@@ -1,3 +1,6 @@
+OB = {"ob_number": "OB 12/15/10/2026"}
+
+
 def _report(client, **overrides):
     body = {
         "type": "flood",
@@ -54,11 +57,12 @@ def test_flood_report_with_evidence_starts_above_in_app_only(client):
     assert report["alert_tier"] == "sms_recommended"
 
 
-def test_crime_report_needs_more_to_reach_sms_tier_than_flood(client):
+def test_crime_report_needs_more_to_reach_sms_tier_than_flood(client, officer_token):
     crime_id = _report(client, type="robbery", has_evidence=True, latitude=-1.28, longitude=36.82)
     flood_id = _report(client, type="flood", has_evidence=True, latitude=-1.19, longitude=36.90)
 
-    feed = {r["id"]: r for r in client.get("/incidents").json()}
+    headers = {"Authorization": f"Bearer {officer_token}"}
+    feed = {r["id"]: r for r in client.get("/incidents/all", headers=headers).json()}
     # crime base 0.15 + evidence 0.15 = 0.30, below crime's 0.50 sms threshold
     assert feed[crime_id]["alert_tier"] == "in_app"
     # flood base 0.35 + evidence 0.15 = 0.50, at/above hazard's 0.30 sms threshold
@@ -152,7 +156,7 @@ def test_missing_child_report_starts_hidden_from_public(client):
 def test_missing_child_public_response_never_includes_reporter_phone(client, officer_token):
     case_id = _report_missing_child(client)
     headers = {"Authorization": f"Bearer {officer_token}"}
-    client.post(f"/missing-child/cases/{case_id}/verify", headers=headers)
+    client.post(f"/missing-child/cases/{case_id}/verify", json=OB, headers=headers)
 
     public_case = next(c for c in client.get("/missing-child/cases").json() if c["id"] == case_id)
     assert "reporter_phone" not in public_case
@@ -166,12 +170,12 @@ def test_missing_child_verification_flow(client, officer_token):
     headers = {"Authorization": f"Bearer {officer_token}"}
 
     # can't verify twice
-    res = client.post(f"/missing-child/cases/{case_id}/verify", headers=headers)
+    res = client.post(f"/missing-child/cases/{case_id}/verify", json=OB, headers=headers)
     assert res.status_code == 200
     assert res.json()["status"] == "verified"
     assert res.json()["verified_by"] is not None
 
-    res2 = client.post(f"/missing-child/cases/{case_id}/verify", headers=headers)
+    res2 = client.post(f"/missing-child/cases/{case_id}/verify", json=OB, headers=headers)
     assert res2.status_code == 400
 
     # now visible publicly
@@ -183,11 +187,11 @@ def test_missing_child_found_safe_is_public_found_deceased_is_not(client, office
     headers = {"Authorization": f"Bearer {officer_token}"}
 
     safe_id = _report_missing_child(client, child_name="Safe Child")
-    client.post(f"/missing-child/cases/{safe_id}/verify", headers=headers)
+    client.post(f"/missing-child/cases/{safe_id}/verify", json=OB, headers=headers)
     client.post(f"/missing-child/cases/{safe_id}/status", json={"status": "found_safe"}, headers=headers)
 
     deceased_id = _report_missing_child(client, child_name="Other Child")
-    client.post(f"/missing-child/cases/{deceased_id}/verify", headers=headers)
+    client.post(f"/missing-child/cases/{deceased_id}/verify", json=OB, headers=headers)
     client.post(f"/missing-child/cases/{deceased_id}/status", json={"status": "found_deceased"}, headers=headers)
 
     public_ids = [c["id"] for c in client.get("/missing-child/cases").json()]
@@ -316,12 +320,12 @@ def _add_subscribers(rows):
 
 def _verified_case(client, headers, **overrides):
     case_id = _report_missing_child(client, **overrides)
-    assert client.post(f"/missing-child/cases/{case_id}/verify", headers=headers).status_code == 200
+    assert client.post(f"/missing-child/cases/{case_id}/verify", json=OB, headers=headers).status_code == 200
     return case_id
 
 
-def test_missing_child_broadcast_requires_a_verified_case(client, officer_token):
-    headers = {"Authorization": f"Bearer {officer_token}"}
+def test_missing_child_broadcast_requires_a_verified_case(client, owner_token):
+    headers = {"Authorization": f"Bearer {owner_token}"}
     case_id = _report_missing_child(client)  # still 'reported'
     res = client.post(f"/missing-child/cases/{case_id}/broadcast", json={}, headers=headers)
     assert res.status_code == 400
@@ -335,8 +339,8 @@ def test_missing_child_broadcast_endpoints_require_officer_auth(client):
     assert client.get("/missing-child/broadcasts").status_code == 401
 
 
-def test_missing_child_broadcast_never_leaks_reporter_phone(client, officer_token):
-    headers = {"Authorization": f"Bearer {officer_token}"}
+def test_missing_child_broadcast_never_leaks_reporter_phone(client, owner_token):
+    headers = {"Authorization": f"Bearer {owner_token}"}
     case_id = _verified_case(client, headers, reporter_phone="+254700123456")
 
     preview = client.get(f"/missing-child/cases/{case_id}/broadcast-preview", headers=headers).json()
@@ -349,8 +353,8 @@ def test_missing_child_broadcast_never_leaks_reporter_phone(client, officer_toke
         assert res.status_code == 400, leaky
 
 
-def test_missing_child_broadcast_targets_each_person_once_within_radius(client, officer_token):
-    headers = {"Authorization": f"Bearer {officer_token}"}
+def test_missing_child_broadcast_targets_each_person_once_within_radius(client, owner_token):
+    headers = {"Authorization": f"Bearer {owner_token}"}
     case_id = _verified_case(client, headers)  # last seen at (-1.28, 36.82)
     _add_subscribers([
         ("+254711111111", -1.281, 36.821),   # near
@@ -374,11 +378,11 @@ class _AlwaysFailsProvider:
         return {"success": False, "error": "gateway down"}
 
 
-def test_broadcasts_count_real_failures_not_attempts(client, officer_token, monkeypatch):
+def test_broadcasts_count_real_failures_not_attempts(client, owner_token, monkeypatch):
     import src.main as main_module
 
     monkeypatch.setattr(main_module, "get_provider", lambda: _AlwaysFailsProvider())
-    headers = {"Authorization": f"Bearer {officer_token}"}
+    headers = {"Authorization": f"Bearer {owner_token}"}
     _add_subscribers([("+254711111111", -1.281, 36.821), ("+254722222222", -1.285, 36.825)])
 
     case_id = _verified_case(client, headers)

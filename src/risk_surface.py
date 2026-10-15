@@ -58,16 +58,27 @@ def _load_points(category: str | None = None):
         age = np.maximum(today - day, 0)
         rows.append(np.column_stack([lat, lon, weight, age]))
 
+    # The risk surface is public output (/predict, /risk/heatmap, /nearby), and
+    # its peak sits exactly on the points it was built from. So crime reports
+    # count only once they are publicly visible, and only at their blurred
+    # ~500 m location; otherwise a fine heatmap could pinpoint a witness.
+    from src.privacy import CRIME_TYPES, PUBLIC_INCIDENT_SQL, snap
+
+    crime_list = ", ".join(f"'{t}'" for t in CRIME_TYPES)
     conn = get_connection()
     live = conn.execute(
         "SELECT latitude, longitude, type, predicted_severity, timestamp FROM incidents "
-        "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        "WHERE latitude IS NOT NULL AND longitude IS NOT NULL "
+        f"AND (type NOT IN ({crime_list}) OR ({PUBLIC_INCIDENT_SQL}))"
     ).fetchall()
     conn.close()
     live_rows = []
     for r in live:
         if category and TYPE_CATEGORY.get(r["type"]) != category:
             continue
+        lat_i, lon_i = r["latitude"], r["longitude"]
+        if r["type"] in CRIME_TYPES:
+            lat_i, lon_i = snap(lat_i), snap(lon_i)
         try:
             # fromisoformat accepts "YYYY-MM-DD HH:MM" and is much cheaper than strptime
             dt = datetime.fromisoformat(r["timestamp"])
@@ -76,7 +87,7 @@ def _load_points(category: str | None = None):
         age = max((now - dt).days, 0)
         # live, verified-by-the-system reports count for more than the synthetic baseline
         w = SEVERITY_WEIGHT.get(r["predicted_severity"], 1.0) * 1.5
-        live_rows.append((r["latitude"], r["longitude"], w, age))
+        live_rows.append((lat_i, lon_i, w, age))
     if live_rows:
         rows.append(np.array(live_rows, dtype=float))
 

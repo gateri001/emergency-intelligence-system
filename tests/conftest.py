@@ -48,3 +48,34 @@ def officer_token(client):
     res = client.post("/token", data={"username": "test_officer", "password": "test_pw"})
     assert res.status_code == 200, res.text
     return res.json()["access_token"]
+
+
+def _account_token(username: str, role: str) -> str:
+    """Creates an account with `role` and returns a token for it directly
+    (not via /token, which is rate-limited to 5 logins a minute)."""
+    from src.auth import create_access_token, hash_password
+    from src.database import get_connection
+
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO officers (username, hashed_password, role) VALUES (?, ?, ?)",
+        (username, hash_password("test_pw"), role),
+    )
+    conn.commit()
+    conn.close()
+    return create_access_token(subject=username)
+
+
+@pytest.fixture()
+def admin_token(client):
+    return _account_token("test_admin", "admin")
+
+
+@pytest.fixture()
+def second_admin_token(client):
+    return _account_token("test_admin_2", "admin")
+
+
+@pytest.fixture()
+def owner_token(client):
+    return _account_token("test_owner", "owner")
