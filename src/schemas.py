@@ -209,6 +209,12 @@ class IncidentOut(BaseModel):
     alert_tier: str = "in_app"
     scoring_stage: str = "reflex"
     magnitude: float | None = None  # fire radiative power (MW) for satellite detections
+    review_status: str | None = None  # officer's call: verified / dismissed / not reviewed (None)
+
+
+class IncidentReviewRequest(BaseModel):
+    action: Literal["verify", "dismiss"]
+    note: str = Field("", max_length=300)
 
 
 class VoteRequest(BaseModel):

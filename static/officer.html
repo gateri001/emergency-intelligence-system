@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EIS Officer Console</title>
+  <link rel="stylesheet" href="vendor/leaflet-1.9.4/leaflet.css" />
+  <link rel="stylesheet" href="officer.css" />
+</head>
+<body>
+  <!-- No inline script or style anywhere on this page: the server sends a
+       strict Content-Security-Policy for it, because it holds the login token. -->
+  <header class="topbar">
+    <span class="brand">EIS Console</span>
+    <span id="who" class="who"></span>
+    <button id="logoutBtn" class="btn ghost small hidden" type="button">Log out</button>
+  </header>
+
+  <main>
+    <section id="loginView" class="view">
+      <h1>Responder sign-in</h1>
+      <form id="loginForm" class="stack">
+        <label for="username">Username</label>
+        <input id="username" autocomplete="username" required />
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required />
+        <button class="btn primary" type="submit">Sign in</button>
+        <p id="loginError" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="alertsView" class="view hidden">
+      <h1>Recommended alerts</h1>
+      <p class="hint">Reports the system rates worth an SMS. Nothing is sent unless you send it.</p>
+      <div id="alertsList" class="cards"></div>
+    </section>
+
+    <section id="reportsView" class="view hidden">
+      <h1>All reports</h1>
+      <p class="hint">Includes officers-only reports. Exact locations: handle with care.</p>
+      <div id="reportsList" class="cards"></div>
+    </section>
+
+    <section id="missingView" class="view hidden">
+      <h1>Missing children</h1>
+      <p class="hint">Nothing is public until verified with a police OB number. Public listings expire after 72 hours unless renewed.</p>
+      <div id="missingList" class="cards"></div>
+    </section>
+
+    <section id="approvalsView" class="view hidden">
+      <h1>Waiting for approval</h1>
+      <p class="hint">Missing-child alerts someone else proposed. Approving sends the exact message shown.</p>
+      <div id="approvalsList" class="cards"></div>
+    </section>
+
+    <section id="logView" class="view hidden">
+      <h1>Audit log</h1>
+      <p class="hint">Every sensitive action: who, when and why.</p>
+      <div id="logList" class="cards"></div>
+    </section>
+  </main>
+
+  <nav id="tabbar" class="tabbar hidden" aria-label="Sections">
+    <button type="button" data-view="alertsView" class="tab active">Alerts<span id="alertsCount" class="count"></span></button>
+    <button type="button" data-view="reportsView" class="tab">Reports</button>
+    <button type="button" data-view="missingView" class="tab">Missing<span id="missingCount" class="count"></span></button>
+    <button type="button" data-view="approvalsView" class="tab approver-only hidden">Approve<span id="approvalsCount" class="count"></span></button>
+    <button type="button" data-view="logView" class="tab owner-only hidden">Log</button>
+  </nav>
+
+  <!-- One reusable in-page sheet for every confirmation (no browser pop-ups). -->
+  <div id="sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <div class="sheet-panel">
+      <h2 id="sheetTitle"></h2>
+      <div id="sheetBody"></div>
+      <p id="sheetError" class="error" role="alert"></p>
+      <div class="sheet-actions">
+        <button id="sheetCancel" class="btn ghost" type="button">Cancel</button>
+        <button id="sheetConfirm" class="btn primary" type="button"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="vendor/leaflet-1.9.4/leaflet.js"></script>
+  <script src="officer.js"></script>
+</body>
+</html>

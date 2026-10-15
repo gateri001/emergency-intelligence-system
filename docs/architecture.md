@@ -439,6 +439,41 @@ incident SMS).
 - A crime report's free-text description and area label are shown publicly as
   written when the reporter opts in; they are not scrubbed.
 
+## Phase C: officer console (2026-10-15)
+
+`/dashboard/officer.html` (+ `officer.css`, `officer.js`): a phone-first console
+with 16px text, 48px buttons and bottom tabs. It replaces the browser pop-ups
+of the old Officer tab with in-page sheets:
+- Recommended alerts are cards with Verify / Dismiss / Send alert. Sending
+  shows a map with the reach circle, the exact message, the live recipient
+  count and any reporter-safety warning before the button says "Send to N".
+  Nobody types incident IDs.
+- Missing children: verify with OB number, propose or (owner) send with a
+  map preview, renew, resolve, follow-up.
+- Approvals tab (admin/owner), audit log tab (owner), and "Reporter number…"
+  (admin/owner, with a reason) on crime cards.
+
+Security:
+- The page has no inline script or style, so the server sends it a strict CSP:
+  only our own scripts, connections only to this server, and map tiles only
+  from OpenStreetMap.
+- All data is written with `textContent`, never as HTML.
+- `tests/test_phase_c.py` fails if inline code or `innerHTML` creeps in.
+- Leaflet 1.9.4 is self-hosted in `static/vendor/` (BSD-2), for both pages.
+  Its hash matched on unpkg and cdnjs.
+
+Backend added: `POST /incidents/{id}/review` (`verify` | `dismiss`, logged).
+Dismissed reports leave `/alert/recommended`; verified ones sort first.
+`EIS_DB_PATH` lets the database live elsewhere (deployment disk, demo copy).
+
+Found by finally looking in a real browser:
+- `Referrer-Policy: no-referrer` (added 2026-09-21) made OpenStreetMap refuse
+  every tile with "Access blocked", so the public dashboard's map had been
+  blank since then. It is now `strict-origin-when-cross-origin`: other sites
+  get our origin only.
+- A Leaflet map created without a starting view crashed when drawing the reach
+  circle, which also stopped the recipient count from loading.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not

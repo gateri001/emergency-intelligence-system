@@ -43,6 +43,7 @@ uvicorn src.main:app --reload
 Then open:
 - `http://127.0.0.1:8000/docs` — interactive API docs
 - `http://127.0.0.1:8000/dashboard/` — the live dashboard
+- `http://127.0.0.1:8000/dashboard/officer.html` — the officer console (sign in with a login from `create_officer.py`)
 
 ### Real SMS (optional)
 

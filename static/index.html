@@ -4,7 +4,7 @@
 <title>Emergency Intelligence System</title>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="vendor/leaflet-1.9.4/leaflet.css" />
 <style>
   :root {
     --bg: #0b0f19; --panel: #111827; --panel2: #1a2333; --border: #263042;
@@ -227,6 +227,7 @@
 
     <!-- OFFICER -->
     <div class="tab-content" id="tab-officer">
+      <div class="hint"><a href="officer.html" style="color:var(--accent)">Open the new officer console</a> (phone-friendly, map previews, approvals).</div>
       <div id="officerLoggedOut">
         <h3>Officer Login</h3>
         <label class="field-label">Username</label>
@@ -273,7 +274,7 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="vendor/leaflet-1.9.4/leaflet.js"></script>
 <script>
 const API = window.location.origin;
 const map = L.map('map').setView([-1.286389, 36.817223], 11);

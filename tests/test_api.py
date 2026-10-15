@@ -427,7 +427,7 @@ def test_security_headers_present_on_api_and_static_responses(client):
         res = client.get(path)
         assert res.headers["x-content-type-options"] == "nosniff", path
         assert res.headers["x-frame-options"] == "DENY", path
-        assert res.headers["referrer-policy"] == "no-referrer", path
+        assert res.headers["referrer-policy"] == "strict-origin-when-cross-origin", path
 
 
 def test_dashboard_is_revalidated_not_heuristically_cached(client):

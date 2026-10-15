@@ -1,7 +1,10 @@
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "eis.db"
+# EIS_DB_PATH lets a deployment keep the database on a persistent disk (and
+# lets a demo run on a copy). Default: eis.db next to the code.
+DB_PATH = Path(os.environ.get("EIS_DB_PATH") or Path(__file__).resolve().parent.parent / "eis.db")
 
 
 def get_connection():
@@ -34,7 +37,9 @@ def init_db():
             base_confidence REAL,
             vote_confirms INTEGER NOT NULL DEFAULT 0,
             vote_disputes INTEGER NOT NULL DEFAULT 0,
-            reporter_phone_enc TEXT
+            reporter_phone_enc TEXT,
+            review_status TEXT CHECK(review_status IN ('verified', 'dismissed')),
+            reviewed_by TEXT
         )
     """)
     # Migration for databases created before visibility/confidence scoring
@@ -56,6 +61,10 @@ def init_db():
         # Crime reporter's optional phone, encrypted (src/privacy.py). Never
         # returned by any officer endpoint; see the reveal endpoint in main.py.
         "reporter_phone_enc TEXT",
+        # An officer's call on a report: 'verified' (checked, real) or
+        # 'dismissed' (not real / not actionable). NULL = not reviewed yet.
+        "review_status TEXT CHECK(review_status IN ('verified', 'dismissed'))",
+        "reviewed_by TEXT",
     ):
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")

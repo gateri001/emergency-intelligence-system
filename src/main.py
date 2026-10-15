@@ -32,6 +32,7 @@ from src.schemas import (
     IncidentBroadcastPreview,
     IncidentOut,
     IncidentReport,
+    IncidentReviewRequest,
     MissingChildBroadcastPreview,
     MissingChildBroadcastRequest,
     MissingChildBroadcastResponse,
@@ -91,6 +92,13 @@ app.add_middleware(
 )
 
 
+OFFICER_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self' data: https://*.tile.openstreetmap.org; "
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     """Cheap, standard hardening on every response: stop MIME sniffing, refuse
@@ -98,7 +106,10 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    # Other sites get our origin only, never the path or query. Not
+    # 'no-referrer': OpenStreetMap's tile servers refuse requests without a
+    # Referer, which blanked every map (found in a real browser, 2026-10-15).
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     if request.url.path.startswith("/dashboard"):
         # Revalidate on every load (still cheap - ETag/304). Without this the
         # browser heuristically cached the page, so after a security fix a
@@ -106,6 +117,11 @@ async def security_headers(request: Request, call_next):
         # a real browser kept executing an XSS payload the server had already
         # stopped serving code for.
         response.headers.setdefault("Cache-Control", "no-cache")
+    if request.url.path.startswith("/dashboard/officer"):
+        # The console holds the login token, so it gets a strict policy: only
+        # our own scripts and styles run (no inline code, no CDNs), it talks
+        # only to this server, and map tiles come from OpenStreetMap only.
+        response.headers.setdefault("Content-Security-Policy", OFFICER_CSP)
     return response
 
 
@@ -333,6 +349,25 @@ def list_incidents(limit: int = Query(100, ge=1, le=500)):
     return [IncidentOut(**public_incident(dict(row))) for row in rows]
 
 
+@app.post("/incidents/{incident_id}/review", response_model=IncidentOut)
+def review_incident(incident_id: int, body: IncidentReviewRequest, officer: str = Depends(get_current_officer)):
+    """An officer's call on a report. 'dismiss' takes it off the recommended
+    list; 'verify' marks it checked and puts it first. Neither changes the
+    confidence score, which stays the system's own estimate."""
+    status = "verified" if body.action == "verify" else "dismissed"
+    conn = get_connection()
+    cur = conn.execute("UPDATE incidents SET review_status = ?, reviewed_by = ? WHERE id = ?",
+                       (status, officer, incident_id))
+    if cur.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    log_action(conn, officer, f"{body.action}_incident", "incident", incident_id, body.note.strip())
+    conn.commit()
+    row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    conn.close()
+    return IncidentOut(**dict(row))
+
+
 @app.post("/incidents/{incident_id}/reveal-reporter")
 def reveal_crime_reporter(incident_id: int, body: RevealRequest,
                           account: dict = Depends(require_role("admin"))):
@@ -441,9 +476,10 @@ def list_recommended_alerts(officer: str = Depends(get_current_officer)):
     """
     conn = get_connection()
     rows = conn.execute(
+        # Dismissed reports leave the list; verified ones go first.
         "SELECT * FROM incidents WHERE alert_tier IN ('sms_recommended', 'critical') "
-        "AND scoring_stage = 'strategic' "
-        "ORDER BY confidence_score DESC LIMIT 100"
+        "AND scoring_stage = 'strategic' AND (review_status IS NULL OR review_status != 'dismissed') "
+        "ORDER BY review_status IS NULL, confidence_score DESC LIMIT 100"
     ).fetchall()
     conn.close()
     return [IncidentOut(**dict(row)) for row in rows]
