@@ -472,7 +472,8 @@ def test_free_text_and_bulk_size_limits(client, officer_token):
     assert res.status_code == 422
 
 
-def test_phone_numbers_are_normalised_or_rejected(client):
+def test_phone_numbers_are_normalised_or_rejected(client, monkeypatch):
+    monkeypatch.setenv("EIS_SIGNUP_ENABLED", "1")
     good = {
         "+254712345678": "+254712345678",
         "0712 345 678": "+254712345678",
@@ -497,9 +498,10 @@ def test_phone_numbers_are_normalised_or_rejected(client):
         assert res.status_code == 422, bad
 
 
-def test_subscribing_twice_updates_instead_of_duplicating(client):
+def test_subscribing_twice_updates_instead_of_duplicating(client, monkeypatch):
     from src.database import get_connection
 
+    monkeypatch.setenv("EIS_SIGNUP_ENABLED", "1")
     first = client.post("/subscribers", json={"phone_number": "0712 345 678", "latitude": -1.28, "longitude": 36.82})
     assert first.json()["status"] == "subscribed"
     second = client.post("/subscribers", json={"phone_number": "+254712345678", "area": "moved", "latitude": -1.5, "longitude": 36.9})

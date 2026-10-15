@@ -474,6 +474,49 @@ Found by finally looking in a real browser:
 - A Leaflet map created without a starting view crashed when drawing the reach
   circle, which also stopped the recipient count from loading.
 
+## Phase B: mobile citizen app (2026-10-15)
+
+`/dashboard/` is now a phone-first citizen app (`index.html`, `app.css`,
+`app.js`). The old tabbed dashboard is kept as `/dashboard/map.html` (full map,
+risk layer, open data, safe route).
+- **Home, "Am I safe here?"** One request to `/nearby` returns modelled risk
+  per category plus public reports within 2 km from the last 7 days. The map
+  sits behind a button and loads Leaflet only when opened, to save data.
+- **Fire / Flood / Medical: two taps** (tile, then Send), using GPS, with the
+  option to choose the place on a map instead. Details are optional. Medical
+  first shows "This app does not send an ambulance" with Call 999 / 112 buttons,
+  then the nearest facilities with Google Maps directions.
+- **Crime: discreet.**
+  - The place is picked on a map; the phone's GPS is never used.
+  - Officers-only unless "also warn people nearby" is ticked.
+  - Phone number optional.
+  - The confirmation is a small "Sent.", and the form clears itself.
+- **Missing child: four careful steps.** First: get an OB number, every report
+  is checked, false reports hurt. Then the child, last seen, and you. Each step
+  is validated before the next.
+- **Offline outbox:** fire, flood, medical and accident reports that fail for
+  lack of signal wait in `localStorage` and send themselves when the connection
+  returns (`online` event, every 30 s, and on open). It is an allowlist.
+  Crime and missing-child reports are never stored on the phone; they say
+  "Not sent… Nothing was saved."
+- **Quick exit** (always in the header): clears the form fields and replaces the
+  page with a Google weather search, so Back does not return to the app.
+- **Wording rule:** "Report received", never a promise that anyone is coming
+  (a test enforces it).
+- **Same security as the console:** no inline code, strict CSP, `textContent` only.
+
+**Two deployment switches** (`GET /config` tells the app):
+- `EIS_SIGNUP_ENABLED` (default off). `/subscribers` returns 503 until it is set to `1`,
+  because nothing yet proves the person owns the number. Keep it off until SMS
+  one-time codes exist.
+- `EIS_DEMO_MODE` (default on). Every visitor sees "Demo: the risk map is built
+  from sample data". Turn it off (`0`) only once the risk baseline is real.
+
+**Known weakness found while testing:** risk is normalised against the busiest
+spot in the (synthetic) data, so most of central Nairobi reads "High" for every
+category. That is alarming and uninformative to a citizen. It needs absolute
+thresholds calibrated on real reports, and it is one more reason demo mode stays on.
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not

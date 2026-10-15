@@ -35,6 +35,8 @@ python scripts/create_officer.py <your-username> --role owner
 python scripts/generate_keys.py
 $env:EIS_SECRET_KEY = "<value>"     # PowerShell
 $env:EIS_DATA_KEY = "<value>"
+# optional switches: EIS_DEMO_MODE=0 hides the demo banner (only with real data);
+# EIS_SIGNUP_ENABLED=1 opens SMS sign-up (only once SMS one-time codes exist)
 
 # run the API
 uvicorn src.main:app --reload
@@ -42,7 +44,8 @@ uvicorn src.main:app --reload
 
 Then open:
 - `http://127.0.0.1:8000/docs` — interactive API docs
-- `http://127.0.0.1:8000/dashboard/` — the live dashboard
+- `http://127.0.0.1:8000/dashboard/` — the citizen app (phone-first)
+- `http://127.0.0.1:8000/dashboard/map.html` — the full map (risk layer, open data, safe route)
 - `http://127.0.0.1:8000/dashboard/officer.html` — the officer console (sign in with a login from `create_officer.py`)
 
 ### Real SMS (optional)

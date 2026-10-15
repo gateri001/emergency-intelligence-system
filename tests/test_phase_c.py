@@ -53,8 +53,8 @@ def test_officer_console_is_served_with_a_strict_csp(client):
     assert res.status_code == 200
     csp = res.headers["content-security-policy"]
     assert "script-src 'self'" in csp and "unsafe-inline" not in csp and "frame-ancestors 'none'" in csp
-    # the public dashboard still has inline script, so it must not get this header (it would break)
-    assert "content-security-policy" not in client.get("/dashboard/").headers
+    # the full-map page still has inline script, so it must not get this header (it would break)
+    assert "content-security-policy" not in client.get("/dashboard/map.html").headers
 
 
 def test_officer_console_has_no_inline_code_and_never_uses_innerhtml():
@@ -68,6 +68,6 @@ def test_officer_console_has_no_inline_code_and_never_uses_innerhtml():
 
 
 def test_no_page_loads_scripts_or_styles_from_a_cdn():
-    for page in ("index.html", "officer.html"):
+    for page in ("index.html", "map.html", "officer.html"):
         html = (STATIC / page).read_text(encoding="utf-8")
         assert "unpkg.com" not in html and "cdn" not in html.lower(), page

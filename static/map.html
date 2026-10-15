@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Emergency Intelligence System</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="vendor/leaflet-1.9.4/leaflet.css" />
+<style>
+  :root {
+    --bg: #0b0f19; --panel: #111827; --panel2: #1a2333; --border: #263042;
+    --text: #e5e7eb; --muted: #9ca3af; --accent: #2563eb; --accent-hover: #1d4ed8;
+    --red: #f87171; --amber: #fbbf24; --green: #34d399;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+  header { background: var(--panel); padding: 14px 18px; display: flex; align-items: baseline; gap: 10px; border-bottom: 1px solid var(--border); }
+  header .brand { font-size: 19px; font-weight: 700; }
+  header .tagline { font-size: 12.5px; color: var(--muted); }
+  .app { display: flex; height: calc(100vh - 53px); }
+  #map { flex: 1 1 60%; min-width: 0; }
+  .panel { flex: 1 1 40%; max-width: 440px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border); }
+  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); flex-shrink: 0; scrollbar-width: thin; }
+  .tab { padding: 11px 11px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-content { flex: 1; overflow-y: auto; padding: 16px; display: none; }
+  .tab-content.active { display: block; }
+  h3 { margin: 0 0 8px; font-size: 15px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  label.field-label { display: block; font-size: 12.5px; color: var(--muted); margin-top: 10px; margin-bottom: 3px; }
+  input, select, textarea, button { width: 100%; padding: 9px; box-sizing: border-box; font-size: 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); }
+  button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; margin-top: 12px; }
+  button:hover { background: var(--accent-hover); }
+  button.secondary { background: var(--panel2); border: 1px solid var(--border); font-weight: 500; margin-top: 8px; }
+  button.secondary:hover { background: #232f45; }
+  .checkbox-row { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 13px; }
+  .checkbox-row input { width: auto; }
+  .result { margin-top: 10px; padding: 9px; border-radius: 6px; background: var(--panel2); font-size: 13.5px; min-height: 16px; border: 1px solid var(--border); }
+  .severity-High { color: var(--red); font-weight: bold; }
+  .severity-Medium { color: var(--amber); font-weight: bold; }
+  .severity-Low { color: var(--green); font-weight: bold; }
+  .tier-critical { color: var(--red); font-weight: bold; }
+  .tier-sms_recommended { color: var(--amber); font-weight: bold; }
+  .tier-in_app { color: var(--muted); }
+  .incident-row { padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+  .incident-row small { color: var(--muted); }
+  .vote-btn { width: auto; display: inline-block; padding: 4px 9px; margin: 6px 6px 0 0; font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); }
+  .selected-box { padding: 8px 9px; border-radius: 6px; background: var(--panel2); border: 1px solid var(--border); font-size: 13px; margin-bottom: 10px; }
+  .logged-in-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 13px; }
+  .logged-in-bar button { width: auto; margin: 0; padding: 6px 10px; font-size: 12px; }
+  .risk-control { background: rgba(17,24,39,.92); color: var(--text); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); font-size: 12.5px; line-height: 1.5; }
+  .risk-control label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; }
+  .risk-control input[type=checkbox] { width: auto; }
+  .risk-control select { width: 100%; margin-top: 4px; padding: 4px 6px; font-size: 12px; }
+  .risk-legend { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+  .risk-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; }
+  @media (max-width: 800px) {
+    .app { flex-direction: column; height: auto; }
+    #map { height: 42vh; flex: none; }
+    .panel { max-width: none; height: 58vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">Emergency Intelligence System</span>
+  <span class="tagline">Multi-hazard risk intelligence for Kenya — crime, flood, fire, medical</span>
+</header>
+
+<div class="app">
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="tabs">
+      <div class="tab active" data-tab="report">Report</div>
+      <div class="tab" data-tab="risk" title="Risk check">Risk</div>
+      <div class="tab" data-tab="route" title="Safe route and nearest medical help">Route</div>
+      <div class="tab" data-tab="feed" title="Live feed and alert sign-up">Feed</div>
+      <div class="tab" data-tab="data" title="Open data: GDACS and UNOSAT">Data</div>
+      <div class="tab" data-tab="missing" title="Missing Child Alert">Missing Child</div>
+      <div class="tab" data-tab="officer">Officer</div>
+    </div>
+
+    <!-- REPORT -->
+    <div class="tab-content active" id="tab-report">
+      <h3>Report an Incident</h3>
+      <div class="hint">Click anywhere on the map to set the location, or use your current position. Works at any point — not a fixed list of areas.</div>
+      <div class="selected-box" id="selectedPoint">No location selected yet.</div>
+      <button class="secondary" onclick="useMyLocation()">Use my current location</button>
+
+      <label class="field-label">Type</label>
+      <select id="type" onchange="defaultVisibilityForType()">
+        <option value="robbery">Robbery</option>
+        <option value="burglary">Burglary</option>
+        <option value="assault">Assault</option>
+        <option value="vandalism">Vandalism</option>
+        <option value="suspicious_activity">Suspicious activity</option>
+        <option value="flood">Flood</option>
+        <option value="fire">Fire</option>
+        <option value="medical_emergency">Medical emergency</option>
+        <option value="accident">Accident</option>
+      </select>
+
+      <label class="field-label">Description (optional)</label>
+      <input id="description" placeholder="What's happening?" />
+
+      <label class="field-label">Who should see this?</label>
+      <select id="visibility">
+        <option value="public">Visible to everyone nearby (crime: shown as a rough area after 15 minutes)</option>
+        <option value="officers_only">Officers only — for your safety (e.g. a crime in progress)</option>
+      </select>
+
+      <div id="crimePhoneRow" style="display:none;">
+        <label class="field-label">Your phone (optional)</label>
+        <input id="crimePhone" placeholder="Only if you agree to be contacted" />
+        <div class="hint">Stored encrypted. Officers never see it; it is opened only if strictly needed, with a written reason that is logged.</div>
+      </div>
+
+      <div class="checkbox-row">
+        <input type="checkbox" id="hasEvidence" /> I have a photo/video of this
+      </div>
+
+      <button onclick="reportIncident()">Submit Report</button>
+      <div class="result" id="reportResult"></div>
+    </div>
+
+    <!-- RISK CHECK -->
+    <div class="tab-content" id="tab-risk">
+      <h3>Risk Prediction</h3>
+      <div class="hint">Check the modeled risk of a given incident type at the selected location.</div>
+      <div class="selected-box" id="selectedPointRisk">No location selected yet.</div>
+      <label class="field-label">Incident type</label>
+      <select id="predictType">
+        <option value="robbery">Robbery</option>
+        <option value="burglary">Burglary</option>
+        <option value="theft">Theft</option>
+        <option value="flood">Flood</option>
+        <option value="fire">Fire</option>
+        <option value="medical_emergency">Medical emergency</option>
+      </select>
+      <button onclick="predictRisk()">Check Risk</button>
+      <div class="result" id="predictionResult"></div>
+    </div>
+
+    <!-- SAFE ROUTE -->
+    <div class="tab-content" id="tab-route">
+      <h3>Find a Safe Route</h3>
+      <div class="hint">Routes from the selected location to the nearest genuinely lower-risk area nearby.</div>
+      <div class="selected-box" id="selectedPointRoute">No location selected yet.</div>
+      <button onclick="requestRoute()">Find Safe Route</button>
+      <div class="result" id="routeResult"></div>
+
+      <h3 style="margin-top:16px;">Nearest Medical Help</h3>
+      <div class="hint">For a medical emergency, the useful question isn't "avoid danger" — it's "get to real help." Real hospital/clinic data (healthsites.io).</div>
+      <button class="secondary" onclick="findNearestFacilities()">Find Nearest Health Facilities</button>
+      <div class="result" id="facilitiesResult"></div>
+    </div>
+
+    <!-- LIVE FEED -->
+    <div class="tab-content" id="tab-feed">
+      <h3>Get alerts near you</h3>
+      <div class="hint">Get an SMS when an officer confirms a serious incident or a missing child near the location you pick on the map. Your number is used only for alerts in your area, is never shown publicly, and you can re-enter it to move your location.</div>
+      <div class="selected-box" id="selectedPointAlerts">No location selected yet. Click the map, or use your current location on the Report tab.</div>
+      <input id="alertPhone" type="tel" placeholder="Your phone, e.g. 0712 345 678" autocomplete="tel" />
+      <button onclick="subscribeAlerts()">Subscribe to alerts here</button>
+      <div class="result" id="alertResult"></div>
+
+      <h3 style="margin-top:18px;">Recent Incidents</h3>
+      <div class="hint">Public feed — reports marked "officers only" by their reporter are not shown here. Satellite detections are numerous, so they have their own filter.</div>
+      <div style="display:flex;gap:8px;">
+        <select id="feedSource" aria-label="Which reports">
+          <option value="reports">Citizen &amp; officer reports</option>
+          <option value="satellite">Satellite fire detections</option>
+          <option value="all">Everything</option>
+        </select>
+        <select id="feedCategory" aria-label="Category">
+          <option value="">All types</option>
+          <option value="crime">Crime</option>
+          <option value="fire">Fire</option>
+          <option value="flood">Flood</option>
+          <option value="medical">Medical / accident</option>
+        </select>
+      </div>
+      <div class="result" id="recentList">Loading…</div>
+    </div>
+
+    <!-- OPEN DATA -->
+    <div class="tab-content" id="tab-data">
+      <h3>Verified Events (GDACS)</h3>
+      <div class="result" id="externalEvents">Loading…</div>
+      <h3 style="margin-top:16px;">Verified Flood Damage (UNOSAT)</h3>
+      <div class="result" id="structuresSummary">Loading…</div>
+    </div>
+
+    <!-- MISSING CHILD -->
+    <div class="tab-content" id="tab-missing">
+      <h3>Report a Missing Child</h3>
+      <div class="hint">Every report is reviewed by an officer before anything is made public — this protects both the child and the family from a false or malicious report going out widely. Officers can still follow up immediately either way.</div>
+      <div class="selected-box" id="selectedPointMissing">No last-seen location selected yet. Click the map.</div>
+
+      <label class="field-label">Child's name</label>
+      <input id="mcName" />
+      <label class="field-label">Age</label>
+      <input id="mcAge" type="number" min="0" max="17" />
+      <label class="field-label">Physical description</label>
+      <input id="mcPhysical" placeholder="Height, build, distinguishing features" />
+      <label class="field-label">Clothing (optional)</label>
+      <input id="mcClothing" placeholder="What they were last seen wearing" />
+      <label class="field-label">Last-seen area (optional label)</label>
+      <input id="mcArea" placeholder="e.g. near Kibera market" />
+      <div class="checkbox-row">
+        <input type="checkbox" id="mcHasPhoto" /> I have a photo
+      </div>
+      <label class="field-label">Your phone number (officers only, never shown publicly)</label>
+      <input id="mcPhone" placeholder="+254712345678" />
+      <label class="field-label">Your relationship to the child</label>
+      <input id="mcRelationship" placeholder="parent / guardian / neighbor / other" />
+
+      <button onclick="reportMissingChild()">Submit Report</button>
+      <div class="result" id="missingReportResult"></div>
+
+      <h3 style="margin-top:16px;">Active / Resolved Cases</h3>
+      <div class="hint">Only officer-verified cases and safe resolutions appear here.</div>
+      <div class="result" id="missingPublicList">Loading…</div>
+    </div>
+
+    <!-- OFFICER -->
+    <div class="tab-content" id="tab-officer">
+      <div class="hint"><a href="officer.html" style="color:var(--accent)">Open the new officer console</a> (phone-friendly, map previews, approvals).</div>
+      <div id="officerLoggedOut">
+        <h3>Officer Login</h3>
+        <label class="field-label">Username</label>
+        <input id="officerUsername" />
+        <label class="field-label">Password</label>
+        <input id="officerPassword" type="password" />
+        <button onclick="officerLogin()">Log In</button>
+        <div class="result" id="officerLoginResult"></div>
+      </div>
+
+      <div id="officerLoggedIn" style="display:none;">
+        <div class="logged-in-bar">
+          <span>Logged in as <strong id="officerName"></strong></span>
+          <button class="secondary" onclick="officerLogout()">Log out</button>
+        </div>
+
+        <h3>Recommended Alerts <span class="badge">confidence-driven</span></h3>
+        <div class="hint">Incidents that have crossed the SMS/critical confidence threshold. Sending SMS is still your call, not automatic.</div>
+        <div class="result" id="recommendedList">Loading…</div>
+
+        <h3 style="margin-top:16px;">Trigger a Broadcast</h3>
+        <label class="field-label">Incident ID</label>
+        <input id="broadcastIncidentId" type="number" />
+        <label class="field-label">Message</label>
+        <input id="broadcastMessage" maxlength="300" />
+        <label class="field-label">Radius (km)</label>
+        <input id="broadcastRadius" type="number" value="5" />
+        <button onclick="triggerBroadcast()">Send Broadcast</button>
+        <div class="result" id="broadcastResult"></div>
+
+        <h3 style="margin-top:16px;">All Incidents (incl. officers-only)</h3>
+        <div class="result" id="allIncidentsList">Loading…</div>
+
+        <div id="proposalSection" style="display:none;">
+          <h3 style="margin-top:16px;">Missing-child alerts waiting for approval</h3>
+          <div class="hint">Two-person rule: someone else proposed each of these. Approving sends the exact message shown.</div>
+          <div class="result" id="proposalList">Loading…</div>
+        </div>
+
+        <h3 style="margin-top:16px;">Missing Child Cases (all statuses)</h3>
+        <div class="result" id="missingOfficerList">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/leaflet-1.9.4/leaflet.js"></script>
+<script>
+const API = window.location.origin;
+const map = L.map('map').setView([-1.286389, 36.817223], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+// -------------------------------------------------------------------
+// Risk surface layer: the model's actual output drawn on the map. Values come
+// from /risk/heatmap, which uses the same normaliser as /predict, so a colour
+// means the same thing at every zoom/pan (see risk_surface.risk_cells).
+// -------------------------------------------------------------------
+const riskLayer = L.layerGroup().addTo(map);
+let riskEnabled = false, riskTimer = null, riskRequestId = 0;
+
+const RiskControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd() {
+    const div = L.DomUtil.create('div', 'risk-control');
+    div.innerHTML = `<label><input type="checkbox" class="risk-toggle"> Risk surface</label>
+      <select class="risk-category">
+        <option value="">All hazards</option>
+        <option value="crime">Crime</option>
+        <option value="hazard">Flood / fire</option>
+        <option value="medical">Medical / accidents</option>
+      </select>
+      <div class="risk-legend"><i style="background:#34d399"></i>Low <i style="background:#fbbf24"></i>Medium <i style="background:#f87171"></i>High</div>`;
+    L.DomEvent.disableClickPropagation(div);
+    div.querySelector('.risk-toggle').addEventListener('change', (e) => { riskEnabled = e.target.checked; refreshRiskLayer(); });
+    div.querySelector('.risk-category').addEventListener('change', () => refreshRiskLayer());
+    return div;
+  },
+});
+map.addControl(new RiskControl());
+
+async function refreshRiskLayer() {
+  const myRequest = ++riskRequestId;
+  if (!riskEnabled) { riskLayer.clearLayers(); return; }
+  const b = map.getBounds();
+  const params = new URLSearchParams({
+    lat_min: b.getSouth(), lon_min: b.getWest(), lat_max: b.getNorth(), lon_max: b.getEast(), size: 40,
+  });
+  const category = document.querySelector('.risk-category').value;
+  if (category) params.set('category', category);
+  let data;
+  try {
+    const res = await fetch(`${API}/risk/heatmap?${params}`);
+    if (!res.ok) return;
+    data = await res.json();
+  } catch (e) { return; }
+  if (myRequest !== riskRequestId) return; // a newer pan/zoom already superseded this one
+  riskLayer.clearLayers();
+  data.cells.forEach(c => {
+    const color = c.risk >= 0.66 ? '#f87171' : c.risk >= 0.33 ? '#fbbf24' : '#34d399';
+    L.rectangle(
+      [[c.lat - data.cell_lat_deg / 2, c.lon - data.cell_lon_deg / 2], [c.lat + data.cell_lat_deg / 2, c.lon + data.cell_lon_deg / 2]],
+      { stroke: false, fillColor: color, fillOpacity: 0.12 + 0.45 * c.risk, interactive: false }
+    ).addTo(riskLayer);
+  });
+}
+map.on('moveend', () => { clearTimeout(riskTimer); riskTimer = setTimeout(refreshRiskLayer, 400); });
+
+// SECURITY: every value that came from the API (reporters control many of
+// them, and public endpoints accept anything) must go through esc() before
+// being placed in an innerHTML template or a Leaflet popup (which renders
+// HTML). Without this, a public report with <img onerror=...> in its "area"
+// ran script in every visitor's browser, including officers whose login
+// token lives in sessionStorage. tests/test_api.py scans this file for
+// unescaped interpolations of user-controlled fields.
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// FastAPI returns `detail` as a string for most errors but as a LIST of
+// {loc, msg} objects for validation failures (HTTP 422) - which used to print
+// as "[object Object]". Turns either into a readable sentence.
+function errMsg(data, fallback) {
+  const d = data && data.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) {
+    return d.map(e => {
+      const field = (e.loc || []).filter(p => p !== 'body').join(' > ');
+      const msg = String(e.msg || '').replace(/^Value error, /, '');
+      return field ? `${field}: ${msg}` : msg;
+    }).join('; ');
+  }
+  return fallback;
+}
+
+function nowTimestamp() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// -------------------------------------------------------------------
+// Tabs
+// -------------------------------------------------------------------
+document.querySelectorAll('.tab').forEach(tabEl => {
+  tabEl.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    tabEl.classList.add('active');
+    document.getElementById(`tab-${tabEl.dataset.tab}`).classList.add('active');
+    tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // never leave the active tab off-screen
+  });
+});
+
+// -------------------------------------------------------------------
+// Selected location - single source of truth for report/risk/route
+// -------------------------------------------------------------------
+let selected = null;
+let selectedMarker = null;
+
+function setSelected(lat, lon) {
+  selected = { lat, lon };
+  const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  ['selectedPoint', 'selectedPointRisk', 'selectedPointRoute', 'selectedPointMissing', 'selectedPointAlerts'].forEach(id => {
+    document.getElementById(id).innerText = label;
+  });
+  if (selectedMarker) map.removeLayer(selectedMarker);
+  selectedMarker = L.marker([lat, lon]).addTo(map);
+}
+
+map.on('click', (e) => setSelected(e.latlng.lat, e.latlng.lng));
+
+function useMyLocation() {
+  if (!navigator.geolocation) {
+    document.getElementById('selectedPoint').innerText = 'Geolocation not supported by this browser.';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => { setSelected(pos.coords.latitude, pos.coords.longitude); map.setView([pos.coords.latitude, pos.coords.longitude], 14); },
+    () => { document.getElementById('selectedPoint').innerText = 'Could not get your location — click the map instead.'; }
+  );
+}
+
+function requireSelected(resultElId) {
+  if (!selected) {
+    document.getElementById(resultElId).innerText = 'Select a location on the map first.';
+    return false;
+  }
+  return true;
+}
+
+// -------------------------------------------------------------------
+// Report
+// -------------------------------------------------------------------
+async function reportIncident() {
+  if (!requireSelected('reportResult')) return;
+  const body = {
+    type: document.getElementById('type').value,
+    latitude: selected.lat,
+    longitude: selected.lon,
+    description: document.getElementById('description').value,
+    timestamp: nowTimestamp(),
+    visibility: document.getElementById('visibility').value,
+    has_evidence: document.getElementById('hasEvidence').checked
+  };
+  const phone = document.getElementById('crimePhone').value.trim();
+  if (CRIME_TYPES.has(body.type) && phone) body.reporter_phone = phone;
+  const res = await fetch(`${API}/report/citizen`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  let msg = res.ok ? 'Report received.' : errMsg(data, 'Error submitting report');
+  if (res.ok && data.phone_stored === false) msg += ' Your phone number could not be stored, so nobody can call you back.';
+  document.getElementById('reportResult').innerText = msg;
+  if (res.ok) {
+    document.getElementById('crimePhone').value = '';
+    document.getElementById('description').value = '';
+    loadRecent();
+  }
+}
+
+// Crime is officers-only unless the reporter deliberately chooses to warn
+// people nearby; the server applies the same default if nothing is sent.
+function defaultVisibilityForType() {
+  const isCrime = CRIME_TYPES.has(document.getElementById('type').value);
+  document.getElementById('visibility').value = isCrime ? 'officers_only' : 'public';
+  document.getElementById('crimePhoneRow').style.display = isCrime ? 'block' : 'none';
+}
+
+// -------------------------------------------------------------------
+// Risk prediction
+// -------------------------------------------------------------------
+async function predictRisk() {
+  if (!requireSelected('predictionResult')) return;
+  const body = {
+    latitude: selected.lat,
+    longitude: selected.lon,
+    type: document.getElementById('predictType').value,
+  };
+  const res = await fetch(`${API}/predict`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const el = document.getElementById('predictionResult');
+  el.innerHTML = res.ok
+    ? `Predicted risk: <span class="severity-${esc(data.predicted_severity)}">${esc(data.predicted_severity)}</span> (score ${esc(data.risk_score)})`
+    : esc(errMsg(data, 'Error getting prediction'));
+}
+
+// -------------------------------------------------------------------
+// Safe route
+// -------------------------------------------------------------------
+let routeLayer = null;
+let routeMarkers = [];
+
+async function requestRoute() {
+  const resultEl = document.getElementById('routeResult');
+  if (!requireSelected('routeResult')) return;
+  resultEl.innerText = 'Finding safest route…';
+  const res = await fetch(`${API}/route/safe`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ latitude: selected.lat, longitude: selected.lon })
+  });
+  const data = await res.json();
+  if (!res.ok) { resultEl.innerText = errMsg(data, 'No safe route found from this location.'); return; }
+
+  if (routeLayer) map.removeLayer(routeLayer);
+  routeMarkers.forEach(m => map.removeLayer(m));
+  routeMarkers = [];
+
+  const latlngs = data.waypoints.map(w => [w.lat, w.lon]);
+  routeLayer = L.polyline(latlngs, { color: '#34d399', weight: 5 }).addTo(map);
+  const startMarker = L.circleMarker([data.start.lat, data.start.lon], { radius: 8, color: '#f87171' })
+    .addTo(map).bindPopup(`You are here (risk ${data.start.risk})`).openPopup();
+  const safeMarker = L.circleMarker([data.safe_zone.lat, data.safe_zone.lon], { radius: 8, color: '#34d399' })
+    .addTo(map).bindPopup(`Safe zone (risk ${data.safe_zone.risk})`);
+  routeMarkers.push(startMarker, safeMarker);
+
+  map.fitBounds(routeLayer.getBounds(), { padding: [40, 40] });
+  resultEl.innerText = `Safe zone ${data.distance_km} km away — risk dropped from ${data.start.risk} to ${data.safe_zone.risk}.`;
+}
+
+// -------------------------------------------------------------------
+// Nearest health facilities
+// -------------------------------------------------------------------
+let facilityMarkers = [];
+
+async function findNearestFacilities() {
+  const resultEl = document.getElementById('facilitiesResult');
+  if (!requireSelected('facilitiesResult')) return;
+  resultEl.innerText = 'Searching…';
+  const res = await fetch(`${API}/facilities/nearest?latitude=${selected.lat}&longitude=${selected.lon}&limit=5`);
+  const data = await res.json();
+  facilityMarkers.forEach(m => map.removeLayer(m));
+  facilityMarkers = [];
+  if (!data.length) { resultEl.innerText = 'No known health facilities nearby.'; return; }
+  resultEl.innerHTML = data.map(f =>
+    `<div class="incident-row">${esc(f.name)} <span class="badge">${esc(f.amenity)}</span><br><small>${esc(f.distance_km)} km away${f.has_emergency==='yes' ? ' — emergency services' : ''}</small></div>`
+  ).join('');
+  data.forEach(f => {
+    const m = L.circleMarker([f.latitude, f.longitude], { radius: 7, color: '#38bdf8', fillColor: '#38bdf8', fillOpacity: 0.8 })
+      .addTo(map).bindPopup(`${esc(f.name)} (${esc(f.amenity)}) — ${esc(f.distance_km)} km`);
+    facilityMarkers.push(m);
+  });
+}
+
+// -------------------------------------------------------------------
+// Live feed
+// -------------------------------------------------------------------
+let markers = [];
+function renderIncidentRow(inc) {
+  const severity = inc.predicted_severity || 'assessing…';
+  const stageBadge = inc.scoring_stage === 'reflex' ? ' <span class="badge">assessing</span>'
+    : inc.scoring_stage === 'failed' ? ' <span class="badge" style="color:var(--red)">assessment failed</span>' : '';
+  return `<div class="incident-row">
+    <span style="color:${CATEGORY_COLOR[incidentCategory(inc.type)]}">&#9679;</span> ${esc(inc.type)} — ${esc(inc.area || 'unnamed location')} — <span class="severity-${esc(inc.predicted_severity)}">${esc(severity)}</span>${stageBadge}<br>
+    <small>${esc(inc.timestamp)}${inc.magnitude != null ? ' — ' + esc(inc.magnitude) + ' MW' : ''} — confidence ${(inc.confidence_score*100).toFixed(0)}% — <span class="tier-${esc(inc.alert_tier)}">${esc(String(inc.alert_tier).replace('_',' '))}</span> — via ${esc(inc.source)}${inc.visibility==='officers_only' ? ' — <span class="badge">officers only</span>' : ''}</small><br>
+    <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, true)">Confirm</button>
+    <button class="vote-btn" onclick="voteIncident(${Number(inc.id)}, false)">Dispute</button>
+  </div>`;
+}
+
+// Marker colour by kind of incident, so the map reads at a glance.
+const CRIME_TYPES = new Set(['robbery', 'burglary', 'theft', 'assault', 'vandalism', 'suspicious_activity']);
+function incidentCategory(type) {
+  if (CRIME_TYPES.has(type)) return 'crime';
+  if (type === 'fire') return 'fire';
+  if (type === 'flood') return 'flood';
+  return 'medical'; // accident, medical_emergency
+}
+const CATEGORY_COLOR = { crime: '#f87171', fire: '#fb923c', flood: '#60a5fa', medical: '#c084fc' };
+
+let feedData = [];
+
+// The API returns newest-id-first, and every satellite (FIRMS) run inserts
+// ~150 rows at once, so an unfiltered "recent 50" was almost entirely
+// satellite detections and real citizen/officer reports sank out of view.
+// Fetch more, filter here, and show the first 50 of what remains.
+function renderFeed() {
+  const source = document.getElementById('feedSource').value;
+  const category = document.getElementById('feedCategory').value;
+  const shown = feedData.filter(inc =>
+    (source === 'all' || (source === 'satellite' ? inc.source === 'bulk' : inc.source !== 'bulk')) &&
+    (!category || incidentCategory(inc.type) === category)
+  );
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  const list = document.getElementById('recentList');
+  list.innerHTML = shown.length ? shown.slice(0, 50).map(renderIncidentRow).join('') : 'Nothing matches this filter right now.';
+  shown.forEach(inc => {
+    if (inc.latitude && inc.longitude) {
+      const color = CATEGORY_COLOR[incidentCategory(inc.type)];
+      const m = L.circleMarker([inc.latitude, inc.longitude], { radius: 6, color, fillColor: color, fillOpacity: 0.6, weight: 1 })
+        .addTo(map).bindPopup(`${esc(inc.type)} (${esc(inc.predicted_severity)}) — confidence ${(inc.confidence_score*100).toFixed(0)}%`);
+      markers.push(m);
+    }
+  });
+}
+
+async function loadRecent() {
+  const res = await fetch(`${API}/incidents?limit=300`);
+  if (!res.ok) return;
+  feedData = await res.json();
+  renderFeed();
+}
+
+async function subscribeAlerts() {
+  const el = document.getElementById('alertResult');
+  if (!requireSelected('alertResult')) return;
+  const phone = document.getElementById('alertPhone').value.trim();
+  if (!phone) { el.innerText = 'Enter your phone number first.'; return; }
+  const res = await fetch(`${API}/subscribers`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ phone_number: phone, latitude: selected.lat, longitude: selected.lon })
+  });
+  const data = await res.json();
+  el.innerText = res.ok
+    ? (data.status === 'updated' ? 'Done — your alert location was updated.' : 'Subscribed. You will get an SMS for confirmed serious incidents near this spot.')
+    : errMsg(data, 'Could not subscribe');
+}
+
+async function voteIncident(id, confirm) {
+  await fetch(`${API}/report/${id}/vote`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ confirm })
+  });
+  loadRecent();
+  if (officerToken) loadAllIncidents();
+}
+
+// -------------------------------------------------------------------
+// Open data (GDACS / UNOSAT)
+// -------------------------------------------------------------------
+async function loadExternalEvents() {
+  const res = await fetch(`${API}/events/external`);
+  const data = await res.json();
+  const el = document.getElementById('externalEvents');
+  if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_gdacs.py'; return; }
+  el.innerHTML = data.map(e =>
+    `<div>${esc(e.event_type)} — ${esc(e.name)} <br><small>${esc(e.from_date?.slice(0,10))} → ${esc(e.to_date?.slice(0,10))} (${esc(e.alert_level)})</small></div>`
+  ).join('<hr style="border-color:var(--border)">');
+}
+
+async function loadFloodExtents() {
+  const res = await fetch(`${API}/events/flood-extents`);
+  const data = await res.json();
+  data.forEach(fe => {
+    L.geoJSON(fe.geometry, { style: { color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.35 } })
+      .addTo(map).bindPopup(`Satellite-mapped flood extent — ${esc(fe.region)}, ${esc(fe.source_date)} (UNOSAT)`);
+  });
+}
+
+async function loadStructuresSummary() {
+  const res = await fetch(`${API}/events/affected-structures-summary`);
+  const data = await res.json();
+  const el = document.getElementById('structuresSummary');
+  if (!data.length) { el.innerText = 'None ingested yet — run scripts/ingest_unosat_flood.py'; return; }
+  el.innerHTML = data.map(d => `<div>${esc(d.area)}: ${esc(d.structure_count)} structures affected</div>`).join('');
+}
+
+// -------------------------------------------------------------------
+// Officer
+// -------------------------------------------------------------------
+let officerToken = sessionStorage.getItem('officerToken') || null;
+let officerUser = sessionStorage.getItem('officerUser') || null;
+let officerRole = null;  // from /me; only decides which buttons show - the server checks every action
+
+function officerHeaders() { return { 'Authorization': `Bearer ${officerToken}` }; }
+
+async function loadRole() {
+  const res = await fetch(`${API}/me`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const me = await res.json();
+  officerRole = me.role;
+  document.getElementById('officerName').innerText = `${me.username} (${me.role})`;
+  const approver = officerRole === 'admin' || officerRole === 'owner';
+  document.getElementById('proposalSection').style.display = approver ? 'block' : 'none';
+  if (approver) loadProposals();
+}
+
+function refreshOfficerView() {
+  const loggedOut = document.getElementById('officerLoggedOut');
+  const loggedIn = document.getElementById('officerLoggedIn');
+  if (officerToken) {
+    loggedOut.style.display = 'none';
+    loggedIn.style.display = 'block';
+    document.getElementById('officerName').innerText = officerUser || '';
+    loadRole();
+    loadRecommended();
+    loadAllIncidents();
+    loadMissingOfficer();
+  } else {
+    loggedOut.style.display = 'block';
+    loggedIn.style.display = 'none';
+  }
+}
+
+async function officerLogin() {
+  const username = document.getElementById('officerUsername').value;
+  const password = document.getElementById('officerPassword').value;
+  const form = new URLSearchParams();
+  form.set('username', username);
+  form.set('password', password);
+  const res = await fetch(`${API}/token`, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: form });
+  const data = await res.json();
+  if (!res.ok) { document.getElementById('officerLoginResult').innerText = errMsg(data, 'Login failed'); return; }
+  officerToken = data.access_token;
+  officerUser = username;
+  sessionStorage.setItem('officerToken', officerToken);
+  sessionStorage.setItem('officerUser', officerUser);
+  document.getElementById('officerLoginResult').innerText = '';
+  refreshOfficerView();
+}
+
+function officerLogout() {
+  officerToken = null; officerUser = null; officerRole = null;
+  sessionStorage.removeItem('officerToken'); sessionStorage.removeItem('officerUser');
+  refreshOfficerView();
+}
+
+async function loadRecommended() {
+  const res = await fetch(`${API}/alert/recommended`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const data = await res.json();
+  const el = document.getElementById('recommendedList');
+  el.innerHTML = data.length ? data.map(renderIncidentRow).join('') : 'Nothing above the SMS/critical confidence threshold right now.';
+}
+
+async function loadAllIncidents() {
+  const res = await fetch(`${API}/incidents/all?limit=50`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const data = await res.json();
+  const el = document.getElementById('allIncidentsList');
+  el.innerHTML = data.length ? data.map(inc => `<div class="incident-row">#${inc.id} ${renderIncidentRow(inc)}</div>`).join('') : 'No incidents yet.';
+}
+
+async function triggerBroadcast() {
+  const body = {
+    incident_id: parseInt(document.getElementById('broadcastIncidentId').value, 10),
+    message: document.getElementById('broadcastMessage').value,
+    radius_km: parseFloat(document.getElementById('broadcastRadius').value) || 5
+  };
+  const el0 = document.getElementById('broadcastResult');
+  const pre = await fetch(`${API}/alert/broadcast-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify(body)
+  });
+  const preData = await pre.json();
+  if (!pre.ok) { el0.innerText = errMsg(preData, 'Could not prepare the broadcast'); return; }
+  let question = `This SMS will go to ${preData.recipient_count} subscriber(s) within ${body.radius_km} km:\n\n${body.message}`;
+  if (preData.reporter_safety_warning) question += `\n\nWARNING: ${preData.reporter_safety_warning}`;
+  if (!confirm(question + '\n\nSend it?')) return;
+  const res = await fetch(`${API}/alert/broadcast`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const el = document.getElementById('broadcastResult');
+  if (!res.ok) { el.innerText = errMsg(data, 'Broadcast failed'); return; }
+  let msg = `Sent to ${data.recipients_reached} subscriber(s) within ${data.radius_km}km.`;
+  if (data.reporter_safety_warning) {
+    msg += `<br><br><span style="color:var(--amber)">${esc(data.reporter_safety_warning)}</span>`;
+  }
+  el.innerHTML = msg;
+}
+
+// -------------------------------------------------------------------
+// Missing Child Alert
+// -------------------------------------------------------------------
+async function reportMissingChild() {
+  const el = document.getElementById('missingReportResult');
+  if (!selected) { el.innerText = 'Click the map to set a last-seen location first.'; return; }
+  const body = {
+    child_name: document.getElementById('mcName').value,
+    age: document.getElementById('mcAge').value ? parseInt(document.getElementById('mcAge').value, 10) : null,
+    physical_description: document.getElementById('mcPhysical').value,
+    clothing_description: document.getElementById('mcClothing').value,
+    last_seen_latitude: selected.lat,
+    last_seen_longitude: selected.lon,
+    last_seen_area: document.getElementById('mcArea').value,
+    last_seen_time: nowTimestamp(),
+    has_photo: document.getElementById('mcHasPhoto').checked,
+    reporter_phone: document.getElementById('mcPhone').value,
+    reporter_relationship: document.getElementById('mcRelationship').value,
+  };
+  const res = await fetch(`${API}/missing-child/report`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  el.innerText = res.ok
+    ? `Reported (case #${data.case_id}). An officer will review this before anything is made public.`
+    : errMsg(data, 'Error submitting report');
+  if (res.ok) loadMissingPublic();
+}
+
+function renderMissingCase(c, isOfficer) {
+  const statusLabel = { reported: 'pending review', verified: 'active search', found_safe: 'FOUND SAFE',
+    found_deceased: 'found deceased', closed_false_report: 'closed (false report)' }[c.status] || c.status;
+  let actions = '';
+  if (isOfficer) {
+    if (c.status === 'reported') {
+      actions += `<button class="vote-btn" onclick="verifyMissingCase(${Number(c.id)})">Verify</button>`;
+    }
+    if (c.status === 'verified') {
+      actions += `<button class="vote-btn" style="background:var(--red)" onclick="broadcastMissingCase(${Number(c.id)})">Broadcast…</button>`;
+      actions += `<button class="vote-btn" onclick="renewMissingCase(${Number(c.id)})">Renew 72h</button>`;
+    }
+    if (c.status === 'reported' || c.status === 'verified') {
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'found_safe')">Found safe</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'found_deceased')">Found deceased</button>`;
+      actions += `<button class="vote-btn" onclick="updateMissingStatus(${Number(c.id)}, 'closed_false_report')">False report</button>`;
+    }
+    if (['found_safe', 'found_deceased', 'closed_false_report'].includes(c.status) && !c.followup_sent_at) {
+      actions += `<button class="vote-btn" onclick="sendMissingFollowup(${Number(c.id)})">Send "alert closed" SMS</button>`;
+    }
+  }
+  return `<div class="incident-row">
+    ${isOfficer ? `#${Number(c.id)} ` : ''}${esc(c.child_name)}${c.age != null ? ` (${esc(c.age)})` : ''} — <span class="badge">${esc(statusLabel)}</span><br>
+    <small>${esc(c.physical_description)}${c.clothing_description ? ', ' + esc(c.clothing_description) : ''}</small><br>
+    <small>Last seen: ${esc(c.last_seen_area || 'location on map')} — ${esc(c.last_seen_time)}</small>
+    ${isOfficer ? `<br><small>Reporter: ${esc(c.reporter_phone)} (${esc(c.reporter_relationship || 'relationship not given')})</small>` : ''}
+    ${isOfficer && c.ob_number ? `<br><small>OB: ${esc(c.ob_number)} — public until ${esc(c.expires_at)} UTC</small>` : ''}
+    ${actions ? `<br>${actions}` : ''}
+  </div>`;
+}
+
+async function loadMissingPublic() {
+  const res = await fetch(`${API}/missing-child/cases`);
+  const data = await res.json();
+  const el = document.getElementById('missingPublicList');
+  el.innerHTML = data.length ? data.map(c => renderMissingCase(c, false)).join('') : 'No active or resolved cases right now.';
+}
+
+async function loadMissingOfficer() {
+  const res = await fetch(`${API}/missing-child/cases/all`, { headers: officerHeaders() });
+  if (res.status === 401) { officerLogout(); return; }
+  const data = await res.json();
+  const el = document.getElementById('missingOfficerList');
+  el.innerHTML = data.length ? data.map(c => renderMissingCase(c, true)).join('') : 'No cases on file.';
+}
+
+// Human-in-the-loop: the officer sees the exact message and how many people
+// it would reach BEFORE anything is sent. Only verified cases can be broadcast.
+async function broadcastMissingCase(id) {
+  const radiusInput = prompt('Alert subscribers within how many km of the last-seen location?', '10');
+  if (radiusInput === null) return;
+  const radius = parseFloat(radiusInput);
+  if (!(radius > 0 && radius <= 100)) { alert('Enter a radius between 0 and 100 km.'); return; }
+  const pre = await fetch(`${API}/missing-child/cases/${id}/broadcast-preview?radius_km=${radius}`, { headers: officerHeaders() });
+  const preData = await pre.json();
+  if (!pre.ok) { alert(preData.detail || 'Could not prepare the broadcast.'); return; }
+  // Owner may send alone; everyone else proposes and a different admin approves.
+  const alone = officerRole === 'owner';
+  const verb = alone ? 'SENT NOW' : 'PROPOSED (a different admin must approve before anything is sent)';
+  const ok = confirm(`This SMS will be ${verb} to ${preData.recipient_count} subscriber(s) within ${radius} km:\n\n${preData.message}\n\nContinue?`);
+  if (!ok) return;
+  const url = alone ? `${API}/missing-child/cases/${id}/broadcast` : `${API}/missing-child/cases/${id}/broadcast-proposals`;
+  const res = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
+    body: JSON.stringify({ radius_km: radius, message: preData.message })
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(errMsg(data, 'Broadcast failed')); return; }
+  alert(alone
+    ? `Sent to ${data.recipients_reached} subscriber(s)${data.failed_count ? ', ' + data.failed_count + ' failed' : ''}.`
+    : `Proposal #${data.id} created. It is sent only after a different admin approves it.`);
+  if (officerRole === 'admin' || officerRole === 'owner') loadProposals();
+}
+
+async function verifyMissingCase(id) {
+  const ob = prompt('Police OB (Occurrence Book) number for this case.\nConfirm it with the station before verifying:');
+  if (ob === null) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
+    body: JSON.stringify({ ob_number: ob })
+  });
+  if (!res.ok) alert(errMsg(await res.json(), 'Could not verify'));
+  loadMissingOfficer();
+  loadMissingPublic();
+}
+
+async function renewMissingCase(id) {
+  const note = prompt('Re-confirm with the police first. What did they say? (e.g. "Called Kayole station, still missing")');
+  if (note === null) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/renew`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() },
+    body: JSON.stringify({ note })
+  });
+  if (!res.ok) alert(errMsg(await res.json(), 'Could not renew'));
+  loadMissingOfficer();
+  loadMissingPublic();
+}
+
+async function sendMissingFollowup(id) {
+  if (!confirm('Send "this alert is closed, please disregard" to everyone who received the alert for this case?')) return;
+  const res = await fetch(`${API}/missing-child/cases/${id}/followup`, { method: 'POST', headers: officerHeaders() });
+  const data = await res.json();
+  alert(res.ok ? `Sent to ${data.recipients_reached} person(s).` : errMsg(data, 'Could not send the follow-up'));
+  loadMissingOfficer();
+}
+
+async function loadProposals() {
+  const res = await fetch(`${API}/missing-child/broadcast-proposals?status=pending`, { headers: officerHeaders() });
+  if (!res.ok) return;
+  const data = await res.json();
+  const el = document.getElementById('proposalList');
+  el.innerHTML = data.length ? data.map(p => `<div class="incident-row">
+    Proposal #${Number(p.id)} for case #${Number(p.case_id)} by ${esc(p.proposed_by)} — ${esc(p.radius_km)} km, reaches ${esc(p.recipient_count_now)} now<br>
+    <small>${esc(p.message)}</small><br>
+    ${p.proposed_by === officerUser ? '<small>You proposed this; someone else must decide.</small>' :
+      `<button class="vote-btn" style="background:var(--red)" onclick="decideProposal(${Number(p.id)}, 'approve')">Approve and send</button>
+       <button class="vote-btn" onclick="decideProposal(${Number(p.id)}, 'reject')">Reject</button>`}
+  </div>`).join('') : 'Nothing waiting.';
+}
+
+async function decideProposal(id, action) {
+  if (action === 'approve' && !confirm('Approve and SEND this alert now?')) return;
+  const res = await fetch(`${API}/missing-child/broadcast-proposals/${id}/${action}`, { method: 'POST', headers: officerHeaders() });
+  const data = await res.json();
+  alert(res.ok ? (action === 'approve' ? `Sent to ${data.recipients_reached} subscriber(s).` : 'Rejected.') : errMsg(data, 'Failed'));
+  loadProposals();
+}
+
+async function updateMissingStatus(id, status) {
+  await fetch(`${API}/missing-child/cases/${id}/status`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...officerHeaders() }, body: JSON.stringify({ status })
+  });
+  loadMissingOfficer();
+  loadMissingPublic();
+}
+
+refreshOfficerView();
+
+// -------------------------------------------------------------------
+// Init
+// -------------------------------------------------------------------
+loadRecent();
+loadExternalEvents();
+loadFloodExtents();
+loadStructuresSummary();
+loadMissingPublic();
+document.getElementById('feedSource').addEventListener('change', renderFeed);
+document.getElementById('feedCategory').addEventListener('change', renderFeed);
+setInterval(loadRecent, 15000);
+// Officer views used to go stale until a manual reload.
+setInterval(() => {
+  if (!officerToken) return;
+  loadRecommended(); loadAllIncidents(); loadMissingOfficer();
+  if (officerRole === 'admin' || officerRole === 'owner') loadProposals();
+}, 20000);
+defaultVisibilityForType();
+</script>
+</body>
+</html>

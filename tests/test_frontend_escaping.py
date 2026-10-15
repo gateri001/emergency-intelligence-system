@@ -6,7 +6,7 @@ interpolated into innerHTML templates unescaped, so a public report with
 whose login token lives in sessionStorage.
 
 This runs the dashboard's ACTUAL rendering functions (extracted from
-static/index.html) in Node against hostile input and asserts no live markup
+static/map.html, the full-map page) in Node against hostile input and asserts no live markup
 comes out. Skipped if Node isn't installed.
 """
 import json
@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-INDEX = Path(__file__).resolve().parent.parent / "static" / "index.html"
+INDEX = Path(__file__).resolve().parent.parent / "static" / "map.html"
 PAYLOAD = '<img src=x onerror="window.__pwned=1"><script>alert(1)</script>"\'&'
 
 
 def _function_source(script: str, name: str) -> str:
     m = re.search(rf"(?:async )?function {name}\([^)]*\) \{{.*?\n\}}", script, re.S)
-    assert m, f"could not find function {name} in static/index.html"
+    assert m, f"could not find function {name} in static/map.html"
     return m.group(0)
 
 

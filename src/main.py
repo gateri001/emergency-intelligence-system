@@ -99,6 +99,11 @@ OFFICER_CSP = (
 )
 
 
+# Pages built without inline code, so they can take the strict policy. The
+# older full map (map.html) still has inline script and is not on this list.
+STRICT_CSP_PAGES = {"/dashboard/", "/dashboard/index.html"}
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     """Cheap, standard hardening on every response: stop MIME sniffing, refuse
@@ -117,8 +122,9 @@ async def security_headers(request: Request, call_next):
         # a real browser kept executing an XSS payload the server had already
         # stopped serving code for.
         response.headers.setdefault("Cache-Control", "no-cache")
-    if request.url.path.startswith("/dashboard/officer"):
-        # The console holds the login token, so it gets a strict policy: only
+    if request.url.path in STRICT_CSP_PAGES or request.url.path.startswith("/dashboard/officer"):
+        # The console holds the login token (and the app shares its origin), so
+        # both get a strict policy: only
         # our own scripts and styles run (no inline code, no CDNs), it talks
         # only to this server, and map tiles come from OpenStreetMap only.
         response.headers.setdefault("Content-Security-Policy", OFFICER_CSP)
@@ -489,6 +495,23 @@ def list_recommended_alerts(officer: str = Depends(get_current_officer)):
 # Surjection: geo-targeted broadcast alerts
 # -------------------------------------------------------------------
 
+def signup_enabled() -> bool:
+    return os.environ.get("EIS_SIGNUP_ENABLED", "0") == "1"
+
+
+def demo_mode() -> bool:
+    # On unless explicitly turned off: the risk baseline is synthetic, and the
+    # public must never mistake a demo map for real danger information.
+    return os.environ.get("EIS_DEMO_MODE", "1") != "0"
+
+
+@app.get("/config")
+def public_config():
+    """What the citizen app needs to know about this deployment."""
+    return {"demo_mode": demo_mode(), "signup_enabled": signup_enabled(),
+            "emergency_numbers": ALERT_CONTACT}
+
+
 @app.post("/subscribers")
 @limiter.limit("10/minute")
 def add_subscriber(request: Request, sub: SubscriberIn):
@@ -496,7 +519,13 @@ def add_subscriber(request: Request, sub: SubscriberIn):
 
     Upserts by phone number: subscribing again (same person, any phone
     format) updates their location instead of adding a duplicate row - which
-    used to mean the same person got the same alert SMS several times."""
+    used to mean the same person got the same alert SMS several times.
+
+    OFF unless EIS_SIGNUP_ENABLED=1: nothing yet proves the person owns the
+    number (that needs a one-time SMS code, which needs a live SMS provider),
+    so a public deployment must not collect numbers by accident."""
+    if not signup_enabled():
+        raise HTTPException(status_code=503, detail="SMS alert sign-up is not open yet")
     conn = get_connection()
     key = phone_key(sub.phone_number)
     existing = next(
