@@ -471,7 +471,13 @@ $('checkBtn').addEventListener('click', checkSafety);
 $('nearbyMapBtn').addEventListener('click', () => openMap({ mode: 'view', hint: 'You (blue) and public reports near you. Crime locations are approximate.' }));
 document.querySelectorAll('[data-report]').forEach((b) => b.addEventListener('click', () => openHazard(b.dataset.report)));
 document.querySelectorAll('[data-screen]').forEach((b) => b.addEventListener('click', () => {
-  if (b.dataset.screen === 'missing') mcStep(1);
+  if (b.dataset.screen === 'missing') {
+    mcStep(1);
+    // In the demo the server refuses missing-child reports; say so up front.
+    $('missingDemo').classList.toggle('hidden', !config.demo_mode);
+    document.querySelectorAll('#missing .step').forEach((s) => s.classList.toggle('hidden', config.demo_mode || s.dataset.step !== '1'));
+    $('missingStep').textContent = config.demo_mode ? '' : 'Step 1 of 4';
+  }
   showScreen(b.dataset.screen);
 }));
 $('hazardSendBtn').addEventListener('click', sendHazard);

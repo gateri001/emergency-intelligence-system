@@ -18,6 +18,11 @@ def client(tmp_path, monkeypatch):
     import src.database as database
 
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
+    # Demo mode (the production default) refuses missing-child reports; most
+    # tests exercise the real flows, so they run with it off. Tests about
+    # demo mode set it themselves.
+    monkeypatch.setenv("EIS_DEMO_MODE", "0")
+    monkeypatch.delenv("EIS_BEHIND_CLOUDFLARE_TUNNEL", raising=False)
 
     from fastapi.testclient import TestClient
 

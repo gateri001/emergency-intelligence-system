@@ -17,7 +17,7 @@
   </header>
 
   <div id="demoBanner" class="banner hidden" role="note">
-    Demo: the risk map is built from sample data, not real reports. Do not rely on it for safety.
+    <strong>Demo.</strong> Reports sent here are not seen by police or responders. In an emergency call <span class="em-numbers">999 or 112</span>. The risk map uses sample data.
   </div>
   <div id="outboxBanner" class="banner info hidden" role="status"></div>
 
@@ -48,7 +48,7 @@
 
       <div id="childrenCard" class="card hidden">
         <h2>Help find these children</h2>
-        <p class="hint">Verified with the police. If you see them, call <span class="em-numbers"></span>.</p>
+        <p class="hint">Verified with the police. If you see them, call <span class="em-numbers">999 or 112</span>.</p>
         <div id="childrenList" class="list"></div>
       </div>
 
@@ -126,6 +126,11 @@
     <section id="missing" class="screen hidden">
       <h1>Report a missing child</h1>
       <p id="missingStep" class="hint"></p>
+
+      <div id="missingDemo" class="card urgent hidden">
+        <h2>Not available in this demo</h2>
+        <p>Nothing you enter here would reach the police. If a child is missing, go to the nearest police station now or call <span class="em-numbers">999 or 112</span>.</p>
+      </div>
 
       <div class="card step" data-step="1">
         <h2>Before you start</h2>

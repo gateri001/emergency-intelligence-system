@@ -76,7 +76,22 @@ app = FastAPI(title="Emergency Intelligence System", version="0.1.0", lifespan=l
 # scrappy first line of defense against spam and fabricated-panic flooding;
 # per-IP is a known-weak signal (shared NAT, mobile carriers) but a real
 # improvement over no limit at all, and free to run.
-limiter = Limiter(key_func=get_remote_address)
+def client_address(request: Request) -> str:
+    """Rate-limit key. Behind a Cloudflare tunnel every request reaches us
+    from the local cloudflared process (127.0.0.1), so all visitors would
+    share one limit and one person could lock everyone out. With
+    EIS_BEHIND_CLOUDFLARE_TUNNEL=1 we use Cloudflare's CF-Connecting-IP
+    header instead - but only for requests arriving from this machine, since
+    anyone else could forge the header."""
+    remote = get_remote_address(request)
+    if os.environ.get("EIS_BEHIND_CLOUDFLARE_TUNNEL") == "1" and remote in ("127.0.0.1", "::1"):
+        forwarded = request.headers.get("cf-connecting-ip", "").strip()
+        if forwarded:
+            return forwarded
+    return remote
+
+
+limiter = Limiter(key_func=client_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -728,6 +743,15 @@ def list_facilities(limit: int = Query(2000, ge=1, le=5000)):
 @app.post("/missing-child/report")
 @limiter.limit("10/minute")
 def report_missing_child(request: Request, report: MissingChildReport):
+    if demo_mode():
+        # A demo must not collect a real child's details (or the reporter's
+        # number) before Triagia is registered with the Data Protection
+        # Commissioner and someone is actually watching the console.
+        raise HTTPException(
+            status_code=403,
+            detail=f"This is a demo, so missing-child reports are not accepted here. "
+                   f"Go to the nearest police station or call {ALERT_CONTACT}.",
+        )
     conn = get_connection()
     cursor = conn.execute(
         """INSERT INTO missing_child_cases

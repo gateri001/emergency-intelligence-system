@@ -83,3 +83,29 @@ def test_app_never_promises_that_help_is_coming():
     text = (STATIC / "index.html").read_text(encoding="utf-8") + APP_JS
     for phrase in ("help is on the way", "help is coming", "ambulance is coming", "officers are coming"):
         assert phrase not in text.lower(), phrase
+
+
+def test_demo_mode_refuses_missing_child_reports(client, monkeypatch):
+    monkeypatch.setenv("EIS_DEMO_MODE", "1")
+
+    body = {"child_name": "Test Child", "physical_description": "x", "last_seen_latitude": -1.28,
+            "last_seen_longitude": 36.82, "last_seen_time": "2026-09-18 14:00", "reporter_phone": "+254700000000"}
+    res = client.post("/missing-child/report", json=body)
+    assert res.status_code == 403 and "demo" in res.json()["detail"]
+
+
+def test_rate_limit_key_uses_cloudflare_header_only_from_the_local_tunnel(monkeypatch):
+    from starlette.requests import Request
+
+    from src.main import client_address
+
+    def req(host, cf=None):
+        headers = [(b"cf-connecting-ip", cf.encode())] if cf else []
+        return Request({"type": "http", "client": (host, 1234), "headers": headers, "method": "GET", "path": "/"})
+
+    monkeypatch.delenv("EIS_BEHIND_CLOUDFLARE_TUNNEL", raising=False)
+    assert client_address(req("127.0.0.1", "41.90.1.2")) == "127.0.0.1"  # switch off: header ignored
+    monkeypatch.setenv("EIS_BEHIND_CLOUDFLARE_TUNNEL", "1")
+    assert client_address(req("127.0.0.1", "41.90.1.2")) == "41.90.1.2"
+    assert client_address(req("203.0.113.9", "41.90.1.2")) == "203.0.113.9"  # forged from outside: ignored
+    assert client_address(req("127.0.0.1")) == "127.0.0.1"
