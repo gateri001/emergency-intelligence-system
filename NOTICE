@@ -1,0 +1,11 @@
+Emergency Intelligence System (EIS)
+Copyright 2026 Gateri Jeremiah
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party software:
+
+- Leaflet 1.9.4 (https://leafletjs.com), in static/vendor/leaflet-1.9.4/
+  Copyright (c) 2010-2023, Volodymyr Agafonkin
+  Copyright (c) 2010-2011, CloudMade
+  Licensed under the BSD 2-Clause License (see static/vendor/leaflet-1.9.4/LICENSE)

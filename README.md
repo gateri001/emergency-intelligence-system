@@ -84,3 +84,12 @@ Early — one unified backend, a baseline risk model on synthetic data, and a
 working dashboard. Real (non-synthetic) data sourcing and route/safe-zone
 optimization are next. See `docs/architecture.md` for what's explicitly not
 built yet.
+
+## Licence
+
+Copyright 2026 Gateri Jeremiah.
+
+Licensed under the [Apache License, Version 2.0](LICENSE). You may use,
+change and share this code, including commercially, as long as you keep the
+copyright and licence notices and state the changes you made. See `NOTICE`
+for third-party components.
