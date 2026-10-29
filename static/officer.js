@@ -190,7 +190,7 @@ async function start() {
   $('tabbar').classList.remove('hidden');
   document.querySelectorAll('.approver-only').forEach((el) => el.classList.toggle('hidden', !isApprover()));
   document.querySelectorAll('.owner-only').forEach((el) => el.classList.toggle('hidden', !isOwner()));
-  showView('alertsView');
+  showView('incidentsView');
   await refreshAll();
 }
 
@@ -201,7 +201,7 @@ function showView(id) {
 
 async function refreshAll() {
   if (!me) return;
-  const jobs = [loadAlerts(), loadReports(), loadMissing()];
+  const jobs = [loadIncidents(), loadReports(), loadUnits(), loadMissing()];
   if (isApprover()) jobs.push(loadApprovals());
   if (isOwner()) jobs.push(loadLog());
   await Promise.all(jobs);
@@ -223,7 +223,7 @@ function incidentCard(inc) {
   const badges = [tierBadge(inc.alert_tier)];
   if (inc.visibility === 'officers_only') badges.push(h('span', { class: 'badge private', text: 'officers only' }));
   if (inc.review_status === 'verified') badges.push(h('span', { class: 'badge ok', text: 'verified' }));
-  if (inc.review_status === 'dismissed') badges.push(h('span', { class: 'badge', text: 'dismissed' }));
+  if (inc.review_status === 'dismissed') badges.push(h('span', { class: 'badge', text: inc.dismiss_reason ? `dismissed: ${label(inc.dismiss_reason).toLowerCase()}` : 'dismissed' }));
   if (inc.magnitude != null) badges.push(h('span', { class: 'badge', text: `${inc.magnitude} MW` }));
 
   const actions = h('div', { class: 'actions' });
@@ -236,6 +236,9 @@ function incidentCard(inc) {
   actions.append(h('button', { class: 'btn danger', type: 'button', onclick: () => incidentAlertSheet(inc) }, 'Send alert…'));
   if (isApprover() && CRIME.has(inc.type)) {
     actions.append(h('button', { class: 'btn ghost', type: 'button', onclick: () => revealSheet(inc) }, 'Reporter number…'));
+  }
+  if (inc.cluster_id != null) {
+    actions.append(h('button', { class: 'btn ghost', type: 'button', onclick: () => openIncident(inc.cluster_id) }, `Incident #${inc.cluster_id}`));
   }
 
   return h('div', { class: 'card' },
@@ -251,34 +254,38 @@ function renderList(el, items, render, emptyText) {
   el.replaceChildren(...(items.length ? items.map(render) : [h('div', { class: 'empty', text: emptyText })]));
 }
 
-async function loadAlerts() {
-  const res = await api('/alert/recommended');
-  if (!res.ok) return;
-  renderList($('alertsList'), res.data, incidentCard, 'Nothing needs an alert right now.');
-  const unreviewed = res.data.filter((i) => !i.review_status).length;
-  $('alertsCount').textContent = unreviewed ? String(unreviewed) : '';
-}
-
 async function loadReports() {
   const res = await api('/incidents/all?limit=100');
   if (!res.ok) return;
   renderList($('reportsList'), res.data, incidentCard, 'No reports yet.');
 }
 
-async function reviewIncident(inc, action, note = '') {
-  const res = await api(`/incidents/${inc.id}/review`, { method: 'POST', body: { action, note } });
+async function reviewIncident(inc, action, note = '', reason = null) {
+  const res = await api(`/incidents/${inc.id}/review`, { method: 'POST', body: { action, note, reason } });
   if (!res.ok) throw new Error(errText(res.data, 'Could not save'));
   toast(action === 'verify' ? `Report #${inc.id} marked verified.` : `Report #${inc.id} dismissed.`);
   refreshAll();
 }
 
+function reasonSelect() {
+  return h('select', { 'aria-label': 'Why dismiss' },
+    h('option', { value: '', text: 'Why? Choose one' }),
+    ...REASONS.map(([value, text]) => h('option', { value, text })));
+}
+
 function dismissSheet(inc) {
-  const note = h('textarea', { id: 'dismissNote', maxlength: '300', placeholder: 'Optional: why (e.g. duplicate, prank, already handled)' });
+  const reason = reasonSelect();
+  const note = h('textarea', { id: 'dismissNote', maxlength: '300', placeholder: 'Optional note' });
   openSheet({
     title: `Dismiss report #${inc.id}?`,
-    body: h('div', {}, h('p', { class: 'hint', text: 'It leaves the recommended list. The report itself is kept.' }), note),
+    body: h('div', {},
+      h('p', { class: 'hint', text: 'It leaves the recommended list. The report itself is kept. Only "prank" counts against the sender; honest mistakes cost nothing.' }),
+      h('div', { class: 'field' }, reason), note),
     confirmLabel: 'Dismiss',
-    onConfirm: () => reviewIncident(inc, 'dismiss', note.value.trim()),
+    onConfirm: () => {
+      if (!reason.value) throw new Error('Choose why first.');
+      return reviewIncident(inc, 'dismiss', note.value.trim(), reason.value);
+    },
   });
 }
 
@@ -373,6 +380,231 @@ function revealSheet(inc) {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Incidents: reports of one event, grouped by the server (src/clustering.py)
+// ---------------------------------------------------------------------------
+
+let incidentState = 'open';
+let units = [];
+
+const STATUS_TEXT = {
+  new: 'needs checking', verified: 'verified', assigned: 'unit assigned', en_route: 'en route',
+  on_scene: 'on scene', resolved: 'resolved', dismissed: 'dismissed', merged: 'merged',
+};
+const NEXT_LABEL = {
+  verified: 'Verify', assigned: 'Mark assigned', en_route: 'Mark en route', on_scene: 'Mark on scene',
+  resolved: 'Resolve', new: 'Reopen',
+};
+const REASONS = [
+  ['prank', 'Prank: deliberately false'], ['mistaken', 'Honest mistake'], ['duplicate', 'Duplicate'],
+  ['unverifiable', 'Could not verify'], ['not_actionable', 'Not actionable'],
+];
+const ACTIVE = new Set(['verified', 'assigned', 'en_route', 'on_scene']);
+
+function statusBadge(s) { return h('span', { class: `badge status ${s}`, text: STATUS_TEXT[s] || s }); }
+
+function witnesses(c) {
+  const reports = `${c.report_count} ${c.report_count === 1 ? 'report' : 'reports'}`;
+  if (c.independent_count >= c.report_count) return reports;
+  return `${reports} from ${c.independent_count} ${c.independent_count === 1 ? 'sender' : 'senders'}`;
+}
+
+function clusterCard(c) {
+  const badges = [statusBadge(c.status), tierBadge(c.alert_tier)];
+  if (c.escalate) badges.push(h('span', { class: 'badge critical', text: 'escalated' }));
+  if (c.officers_only) badges.push(h('span', { class: 'badge private', text: 'officers only' }));
+  if (c.needs_location) badges.push(h('span', { class: 'badge private', text: 'needs location' }));
+  if (c.needs_translation) badges.push(h('span', { class: 'badge private', text: 'needs translation' }));
+  if (utc(c.last_activity_at) < Date.now() - 24 * 3600 * 1000) badges.push(h('span', { class: 'badge', text: 'quiet 24h+' }));
+  const people = [c.commander ? `Commander: ${c.commander}` : '',
+    c.units_count ? `${c.units_count} ${c.units_count === 1 ? 'unit' : 'units'} attached` : ''].filter(Boolean);
+  const open = () => openIncident(c.id);
+  return h('div', {
+    class: `card clickable${c.escalate ? ' escalated' : ''}`, role: 'button', tabindex: '0',
+    onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); },
+  },
+  h('div', { class: 'title' }, label(c.type), ...badges),
+  h('div', { class: 'meta' }, `#${c.id} · ${witnesses(c)} · ${Math.round(c.confidence_score * 100)}% confidence · last ${c.last_report_at}`),
+  c.area ? h('div', { class: 'meta' }, c.area) : null,
+  people.length ? h('div', { class: 'meta' }, people.join(' · ')) : null,
+  c.dismiss_reason ? h('div', { class: 'meta' }, `Dismissed: ${label(c.dismiss_reason).toLowerCase()}`) : null);
+}
+
+async function loadIncidents() {
+  const res = await api(`/clusters?state=${incidentState}`);
+  if (!res.ok) return;
+  renderList($('incidentsList'), res.data, clusterCard,
+    incidentState === 'open' ? 'No open incidents.' : 'No closed incidents yet.');
+  if (incidentState === 'open') {
+    // Only live ones: old satellite detections would keep the badge full forever.
+    const dayAgo = Date.now() - 24 * 3600 * 1000;
+    const unchecked = res.data.filter((c) => c.status === 'new' && utc(c.last_activity_at) >= dayAgo).length;
+    $('incidentsCount').textContent = unchecked ? String(unchecked) : '';
+  }
+}
+
+async function openIncident(id) {
+  const res = await api(`/clusters/${id}`);
+  if (!res.ok) { toast(errText(res.data, 'Could not open the incident')); return; }
+  const d = res.data;
+  const c = d.incident;
+
+  // Every button here saves, then redraws this sheet from the server.
+  async function act(path, body, done) {
+    $('sheetError').textContent = '';
+    const r = await api(path, { method: 'POST', body });
+    if (!r.ok) { $('sheetError').textContent = errText(r.data, 'Could not save'); return; }
+    if (done) toast(done);
+    refreshAll();
+    openIncident(id);
+  }
+  const button = (text, onclick, cls = 'btn') => h('button', { class: cls, type: 'button', onclick }, text);
+
+  const statusRow = h('div', { class: 'row' });
+  for (const s of d.allowed_next) {
+    if (s === 'dismissed') continue;
+    statusRow.append(button(NEXT_LABEL[s] || label(s),
+      () => act(`/clusters/${id}/status`, { status: s }, `Incident #${id}: ${STATUS_TEXT[s]}.`),
+      s === 'verified' ? 'btn primary' : 'btn'));
+  }
+  let dismissRow = null;
+  if (d.allowed_next.includes('dismissed')) {
+    const reason = reasonSelect();
+    dismissRow = h('div', { class: 'row' }, reason, button('Dismiss', () => {
+      if (!reason.value) { $('sheetError').textContent = 'Choose why it is being dismissed.'; return; }
+      act(`/clusters/${id}/status`, { status: 'dismissed', reason: reason.value }, `Incident #${id} dismissed.`);
+    }));
+  }
+
+  const unitRows = d.units.map((u) => h('div', { class: 'row' },
+    h('span', { text: `${u.name}: ${label(u.status)}` }),
+    u.status === 'assigned' ? button('En route', () => act(`/units/${u.id}/status`, { status: 'en_route' })) : null,
+    u.status !== 'on_scene' ? button('On scene', () => act(`/units/${u.id}/status`, { status: 'on_scene' })) : null,
+    button('Free', () => act(`/units/${u.id}/status`, { status: 'available' }), 'btn ghost')));
+  let sendRow = null;
+  if (ACTIVE.has(c.status)) {
+    const free = units.filter((u) => u.status === 'available');
+    if (free.length) {
+      const pick = h('select', { 'aria-label': 'Unit to send' },
+        ...free.map((u) => h('option', { value: String(u.id), text: u.kind ? `${u.name} (${u.kind})` : u.name })));
+      sendRow = h('div', { class: 'row' }, pick, button('Send unit',
+        () => act(`/units/${pick.value}/status`, { status: 'assigned', cluster_id: id }, 'Unit assigned.'), 'btn primary'));
+    } else {
+      sendRow = h('p', { class: 'hint', text: units.length ? 'No unit is free right now.' : 'No units yet: add them on the Units tab.' });
+    }
+  } else if (c.status === 'new') {
+    sendRow = h('p', { class: 'hint', text: 'Verify the incident before sending anyone.' });
+  }
+
+  const mine = c.commander === me.username;
+  const flag = (key, text) => h('button', {
+    class: `btn small${c[key] ? ' on' : ''}`, type: 'button', 'aria-pressed': c[key] ? 'true' : 'false',
+    onclick: () => act(`/clusters/${id}/flags`, { [key]: !c[key] }),
+  }, text);
+
+  const live = d.reports.filter((r) => r.review_status !== 'dismissed')
+    .sort((a, b) => b.confidence_score - a.confidence_score);
+  const alertBtn = live.length && ACTIVE.has(c.status)
+    ? button('Send SMS alert…', () => incidentAlertSheet(live[0]), 'btn danger') : null;
+
+  const mergeInput = h('input', { type: 'number', min: '1', inputmode: 'numeric', placeholder: 'Other incident #', 'aria-label': 'Other incident number' });
+  const mergeRow = c.status === 'merged' ? null : h('div', { class: 'row' }, mergeInput, button('Merge into this', () => {
+    const other = Number(mergeInput.value);
+    if (!other) { $('sheetError').textContent = 'Type the other incident number first.'; return; }
+    act(`/clusters/${id}/merge`, { other_id: other }, `Incident #${other} merged into #${id}.`);
+  }));
+
+  const reports = d.reports.map((r) => h('div', { class: 'mini-report' },
+    h('div', {}, h('strong', { text: `#${r.id}` }), ` ${r.source} · ${r.timestamp} · ${Math.round(r.confidence_score * 100)}%`,
+      r.review_status ? h('span', {
+        class: r.review_status === 'verified' ? 'badge ok' : 'badge',
+        text: r.dismiss_reason ? `${r.review_status}: ${label(r.dismiss_reason).toLowerCase()}` : r.review_status,
+      }) : null),
+    r.area ? h('div', { class: 'meta' }, r.area) : null,
+    r.description ? h('div', { class: 'body' }, r.description) : null,
+    d.reports.length > 1 ? h('div', { class: 'row' }, button('Different event: split off',
+      () => act(`/incidents/${r.id}/detach`, undefined, `Report #${r.id} is now its own incident.`), 'btn small ghost')) : null));
+
+  const timeline = h('ul', { class: 'timeline' }, ...d.timeline.map((e) => h('li', { class: e.kind },
+    h('div', { class: 'when', text: `${e.at || ''} UTC${e.actor ? ` · ${e.actor}` : ''}` }),
+    h('div', { text: e.text }))));
+
+  const mapEl = h('div', { class: 'mini-map' });
+  const body = h('div', {},
+    h('div', {}, statusBadge(c.status), tierBadge(c.alert_tier), c.officers_only ? h('span', { class: 'badge private', text: 'officers only' }) : null),
+    h('div', { class: 'meta' }, `${witnesses(c)} · ${Math.round(c.confidence_score * 100)}% confidence · ${c.first_report_at} to ${c.last_report_at}`),
+    c.area ? h('div', { class: 'meta' }, c.area) : null,
+    c.merged_into ? h('p', { class: 'warning', text: `Merged into incident #${c.merged_into}.` }) : null,
+    mapEl,
+    statusRow.childElementCount ? statusRow : null,
+    dismissRow,
+    h('div', { class: 'section-title', text: 'Units' }), ...unitRows, sendRow,
+    h('div', { class: 'section-title', text: 'Command' }),
+    h('div', { class: 'row' }, button(mine ? 'Release command' : (c.commander ? `Take over from ${c.commander}` : 'Take command'),
+      () => act(`/clusters/${id}/commander`, { commander: mine ? null : me.username }, mine ? 'Command released.' : 'You are in command.')), alertBtn),
+    h('div', { class: 'row' }, flag('escalate', 'Escalate'), flag('needs_location', 'Needs location'), flag('needs_translation', 'Needs translation')),
+    h('div', { class: 'section-title', text: `Reports (${d.reports.length})` }), ...reports,
+    mergeRow,
+    h('div', { class: 'section-title', text: 'Timeline' }), timeline);
+
+  openSheet({
+    title: `${label(c.type)} · incident #${c.id}`,
+    body,
+    cancelLabel: 'Close',
+    afterOpen: () => {
+      const rm = reachMap(mapEl, c.latitude, c.longitude, 0.5);
+      return () => rm.destroy();
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Units
+// ---------------------------------------------------------------------------
+
+async function loadUnits() {
+  const res = await api('/units');
+  if (!res.ok) return;
+  units = res.data;
+  renderList($('unitsList'), units, unitCard, 'No units yet.');
+}
+
+async function moveUnit(u, status) {
+  const res = await api(`/units/${u.id}/status`, { method: 'POST', body: { status } });
+  if (!res.ok) { toast(errText(res.data, 'Could not update the unit')); return; }
+  toast(`${u.name}: ${label(status).toLowerCase()}.`);
+  refreshAll();
+}
+
+function unitCard(u) {
+  const cls = { available: 'badge ok', unavailable: 'badge' }[u.status] || 'badge sms';
+  const actions = h('div', { class: 'actions' });
+  if (u.cluster_id != null) {
+    actions.append(h('button', { class: 'btn', type: 'button', onclick: () => openIncident(u.cluster_id) }, `Incident #${u.cluster_id}`));
+  }
+  if (u.status === 'assigned') actions.append(h('button', { class: 'btn', type: 'button', onclick: () => moveUnit(u, 'en_route') }, 'En route'));
+  if (u.status === 'assigned' || u.status === 'en_route') {
+    actions.append(h('button', { class: 'btn', type: 'button', onclick: () => moveUnit(u, 'on_scene') }, 'On scene'));
+  }
+  if (u.status !== 'available') actions.append(h('button', { class: 'btn ghost', type: 'button', onclick: () => moveUnit(u, 'available') }, 'Free'));
+  if (u.status === 'available') actions.append(h('button', { class: 'btn ghost', type: 'button', onclick: () => moveUnit(u, 'unavailable') }, 'Off duty'));
+  return h('div', { class: 'card' },
+    h('div', { class: 'title' }, u.name, h('span', { class: cls, text: label(u.status).toLowerCase() })),
+    h('div', { class: 'meta' }, [u.kind, u.updated_by ? `updated by ${u.updated_by}` : '', `${u.updated_at} UTC`].filter(Boolean).join(' · ')),
+    actions);
+}
+
+async function addUnit(ev) {
+  ev.preventDefault();
+  const res = await api('/units', { method: 'POST', body: { name: $('unitName').value.trim(), kind: $('unitKind').value.trim() } });
+  if (!res.ok) { toast(errText(res.data, 'Could not add the unit')); return; }
+  $('unitName').value = '';
+  $('unitKind').value = '';
+  toast(`${res.data.name} added.`);
+  loadUnits();
+}
+
 
 // ---------------------------------------------------------------------------
 // Missing children
@@ -646,6 +878,12 @@ $('sheetCancel').addEventListener('click', closeSheet);
 $('sheet').addEventListener('click', (e) => { if (e.target === $('sheet')) closeSheet(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpen()) closeSheet(); });
 document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showView(t.dataset.view)));
+document.querySelectorAll('.filter').forEach((b) => b.addEventListener('click', () => {
+  incidentState = b.dataset.state;
+  document.querySelectorAll('.filter').forEach((x) => x.classList.toggle('active', x === b));
+  loadIncidents();
+}));
+$('unitForm').addEventListener('submit', addUnit);
 setInterval(() => { if (me && !sheetOpen()) refreshAll(); }, REFRESH_MS);
 
 if (token) start(); else logout();

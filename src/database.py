@@ -65,12 +65,72 @@ def init_db():
         # 'dismissed' (not real / not actionable). NULL = not reviewed yet.
         "review_status TEXT CHECK(review_status IN ('verified', 'dismissed'))",
         "reviewed_by TEXT",
+        # Block A: which incident (cluster) this report belongs to - see
+        # src/clustering.py. NULL until the strategic pass has placed it.
+        "cluster_id INTEGER",
+        # A pseudonym for whoever sent the report (keyed hash of their phone
+        # or chat id; 'officer:<name>' for officers), so two messages from
+        # one person never count as two independent witnesses, and so a
+        # reporter's track record can count. NULL = unknown sender (web app).
+        "reporter_key TEXT",
+        # Why an officer dismissed it: prank / mistaken / duplicate /
+        # unverifiable / not_actionable. Only 'prank' lowers reputation.
+        "dismiss_reason TEXT",
     ):
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col_def}")
         except sqlite3.OperationalError as e:
             if "duplicate column" not in str(e).lower():
                 raise
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_cluster ON incidents(cluster_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_reporter ON incidents(reporter_key)")
+    # Block A: an incident as responders see it - one real-world event, made
+    # of one or more reports (src/clustering.py). Officers only; nothing here
+    # is ever served publicly. Most fields are recomputed from the member
+    # reports; status, commander and the flags are officers' decisions.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS clusters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new' CHECK(status IN
+                ('new', 'verified', 'assigned', 'en_route', 'on_scene', 'resolved', 'dismissed', 'merged')),
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            area TEXT NOT NULL DEFAULT '',
+            report_count INTEGER NOT NULL DEFAULT 0,
+            independent_count INTEGER NOT NULL DEFAULT 0,
+            confidence_score REAL NOT NULL DEFAULT 0.0,
+            alert_tier TEXT NOT NULL DEFAULT 'in_app',
+            officers_only INTEGER NOT NULL DEFAULT 0,
+            first_report_at TEXT NOT NULL,
+            last_report_at TEXT NOT NULL,
+            commander TEXT,
+            needs_location INTEGER NOT NULL DEFAULT 0,
+            needs_translation INTEGER NOT NULL DEFAULT 0,
+            escalate INTEGER NOT NULL DEFAULT 0,
+            dismiss_reason TEXT,
+            merged_into INTEGER REFERENCES clusters(id),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_clusters_open ON clusters(type, status)")
+    # Block A: responders and their state, for the console's unit board.
+    # A unit is anything that can be sent: an engine, an ambulance, a Red
+    # Cross team, a community response team.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            kind TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'available' CHECK(status IN
+                ('available', 'assigned', 'en_route', 'on_scene', 'unavailable')),
+            cluster_id INTEGER REFERENCES clusters(id),
+            note TEXT NOT NULL DEFAULT '',
+            updated_by TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS officers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

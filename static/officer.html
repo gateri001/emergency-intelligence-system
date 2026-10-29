@@ -29,16 +29,32 @@
       </form>
     </section>
 
-    <section id="alertsView" class="view hidden">
-      <h1>Recommended alerts</h1>
-      <p class="hint">Reports the system rates worth an SMS. Nothing is sent unless you send it.</p>
-      <div id="alertsList" class="cards"></div>
+    <section id="incidentsView" class="view hidden">
+      <h1>Incidents</h1>
+      <p class="hint">Reports of the same event, grouped. Nothing moves until a person verifies it, and nothing is sent unless you send it.</p>
+      <div class="filters" role="group" aria-label="Which incidents">
+        <button type="button" class="btn small filter active" data-state="open">Open</button>
+        <button type="button" class="btn small filter" data-state="closed">Closed</button>
+      </div>
+      <div id="incidentsList" class="cards"></div>
     </section>
 
     <section id="reportsView" class="view hidden">
       <h1>All reports</h1>
       <p class="hint">Includes officers-only reports. Exact locations: handle with care.</p>
       <div id="reportsList" class="cards"></div>
+    </section>
+
+    <section id="unitsView" class="view hidden">
+      <h1>Units</h1>
+      <p class="hint">Who can be sent, and where they are. A unit goes only to a verified incident.</p>
+      <form id="unitForm" class="stack approver-only hidden">
+        <label for="unitName">New unit</label>
+        <input id="unitName" maxlength="60" placeholder="e.g. Engine 2, Mathare CERT team" required />
+        <input id="unitKind" maxlength="40" placeholder="Kind, e.g. fire engine, ambulance, Red Cross team" />
+        <button class="btn" type="submit">Add unit</button>
+      </form>
+      <div id="unitsList" class="cards"></div>
     </section>
 
     <section id="missingView" class="view hidden">
@@ -61,8 +77,9 @@
   </main>
 
   <nav id="tabbar" class="tabbar hidden" aria-label="Sections">
-    <button type="button" data-view="alertsView" class="tab active">Alerts<span id="alertsCount" class="count"></span></button>
+    <button type="button" data-view="incidentsView" class="tab active">Incidents<span id="incidentsCount" class="count"></span></button>
     <button type="button" data-view="reportsView" class="tab">Reports</button>
+    <button type="button" data-view="unitsView" class="tab">Units</button>
     <button type="button" data-view="missingView" class="tab">Missing<span id="missingCount" class="count"></span></button>
     <button type="button" data-view="approvalsView" class="tab approver-only hidden">Approve<span id="approvalsCount" class="count"></span></button>
     <button type="button" data-view="logView" class="tab owner-only hidden">Log</button>

@@ -517,6 +517,108 @@ spot in the (synthetic) data, so most of central Nairobi reads "High" for every
 category. That is alarming and uninformative to a citizen. It needs absolute
 thresholds calibrated on real reports, and it is one more reason demo mode stays on.
 
+## Block A: incidents, lifecycle, units (2026-10-29)
+
+Ten people reporting one flood should be one card for an officer, not ten.
+Code: `src/clustering.py`; endpoints under `/clusters` and `/units` in `src/main.py`.
+None of it is ever served publicly: the public still sees single reports, filtered
+by `src/privacy.py` as before.
+
+**Grouping (a simplified, incremental ST-DBSCAN).**
+- After the strategic pass scores a report, the same transaction puts it into the
+  nearest *open* incident of the same type within a radius and time window, or
+  starts a new one.
+- Rules (judgement calls, tune with real data):
+
+  | Type or category | Radius | Window |
+  |---|---|---|
+  | Flood | 1.5 km | 12 h |
+  | Fire | 0.5 km | 6 h |
+  | Accident | 0.3 km | 2 h |
+  | Medical emergency | 0.2 km | 2 h |
+  | Crime | 0.3 km | 2 h |
+  | Other hazards | 1.0 km | 6 h |
+
+- Resolved or dismissed incidents take no new reports. A new report there starts
+  a new incident.
+- An incident's confidence is its best live report's. Its tier is its highest
+  report tier. Reports an officer dismissed stay attached but add nothing.
+- Officers can **merge** two incidents of the same type and **split** a report off
+  into its own incident.
+- At startup, reports without an incident are placed (old data, failed passes).
+- `forget_orphans` deletes empty incidents nobody acted on. The satellite feed
+  replaces its rows on every run; anything a person touched is kept.
+
+**One sender is one witness.**
+- `incidents.reporter_key` is a pseudonym: an HMAC-SHA256 of the phone or chat id,
+  keyed with `EIS_SECRET_KEY`, or `officer:<name>` / `bulk:...`.
+- Corroboration (`count_nearby_reports`) ignores reports with the same key, so
+  five messages from one phone are one witness.
+- The key is never returned by any endpoint.
+- Without an explicit `EIS_SECRET_KEY`, keys change on every restart, and track
+  records reset with them.
+- Web-app reports have no sender identity. Each still counts once, under the
+  existing cap. The messaging channels (Block B) supply real keys.
+
+**Track records** (`reporter_reputation`, citizen reports only):
+- Neutral by default.
+- +0.05 after one verified report, +0.10 after three.
+- −0.15 per report dismissed as a **prank**, down to −0.30.
+- "Mistaken", "duplicate", "unverifiable" and "not actionable" cost nothing, so
+  honest people who got it wrong aren't punished.
+- Computed from the incidents table on demand, so it can never drift from the
+  officers' actual decisions.
+
+**Lifecycle.**
+- The statuses run: new → verified → assigned → en route → on scene → resolved.
+  An incident can also be dismissed (reason required), and resolved or dismissed
+  incidents can be reopened.
+- Nothing leaves "new" except by a person verifying or dismissing it. Responders
+  are not sent on an unchecked report.
+- Verifying or dismissing an incident judges every report in it that wasn't
+  judged on its own. Reopening a dismissal undoes exactly what it cascaded.
+- Resolving or dismissing frees the incident's units.
+- Every step goes into `audit_log` (target `cluster`).
+
+**Units.**
+- An admin adds units (engine, ambulance, Red Cross team, community team).
+- Officers send a unit only to a verified, open incident.
+- The incident moves forward with its furthest unit (assigned → en route → on
+  scene), never backward.
+
+**Console.**
+- The Alerts tab became **Incidents**.
+  - Escalated incidents come first, then anything with a report in the last 24 h.
+    Found on the demo data: a week of old satellite fires, all "critical", buried
+    tonight's flood.
+  - Then incidents are ordered by tier, unchecked first, then by confidence.
+  - The tab badge counts only live unchecked incidents.
+- Opening an incident shows:
+  - a map
+  - next-step buttons
+  - dismiss with a reason
+  - unit dispatch
+  - "take command"
+  - flags (escalate / needs location / needs translation)
+  - "Send SMS alert…", for verified incidents only, using the incident's best report
+  - each report, with "split off"
+  - merge
+  - a timeline merging reports, officers' actions, unit moves and SMS alerts
+- The timeline uses an allowlist of audit actions: opening a crime reporter's
+  number is logged, and that entry stays owner-only.
+- New **Units** tab. In the Reports tab, dismissing now asks why.
+
+Verified in a real browser on a copy of the demo DB (2026-10-29), following this
+flow: 4 Mathare flood reports → one incident → verify → send Engine 2 → take
+command → on scene → resolve → Engine 2 free again. There were no console errors.
+The design sources are in `EIS_TEARDOWN_2026-10-28.md`, outside the repo.
+
+**Not in Block A (next):**
+- the "Still there?" confirmation loop and time-to-live decay (they need the
+  messaging channels)
+- reporting by Telegram, SMS and WhatsApp
+- the Nairobi place-name lookup
+
 ## Explicitly not yet built
 
 - Street-level turn-by-turn routing (current routing is grid-based, not

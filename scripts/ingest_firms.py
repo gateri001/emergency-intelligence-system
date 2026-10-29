@@ -30,6 +30,7 @@ import shapefile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.clustering import assign_unplaced, forget_orphans
 from src.confidence import compute_initial_confidence, count_nearby_reports, fire_detection_tier
 from src.database import get_connection, init_db
 from src.risk_surface import build_risk_grid, severity_bucket
@@ -71,8 +72,9 @@ def insert_fire_detection(conn, lat, lon, timestamp, description, severity, frp)
     conn.execute(
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
-            visibility, has_evidence, confidence_score, corroboration_count, alert_tier, scoring_stage, magnitude)
-           VALUES ('bulk', 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?, 'strategic', ?)""",
+            visibility, has_evidence, confidence_score, corroboration_count, alert_tier, scoring_stage, magnitude,
+            reporter_key)
+           VALUES ('bulk', 'fire', '', ?, ?, ?, ?, ?, 'public', 0, ?, 0, ?, 'strategic', ?, 'bulk:firms')""",
         (lat, lon, description, severity, timestamp, confidence, tier, float(frp)),
     )
 
@@ -140,8 +142,13 @@ def main():
         insert_fire_detection(conn, lat, lon, timestamp, description, score(lat, lon), rec["FRP"])
         inserted += 1
 
+    # Group adjacent pixels of one fire into one incident (src/clustering.py),
+    # and drop incidents left empty by the delete above that nobody acted on.
+    forget_orphans(conn)
+    placed = assign_unplaced(conn)
     conn.commit()
     conn.close()
+    print(f"Grouped {placed} detections into incidents.")
     print(f"{seen} detections in Kenya bbox, {inserted} met the significance filter "
           f"(FRP>={MIN_FRP}, confidence != low) and were inserted, scored against the "
           f"existing hazard-category risk surface.")

@@ -15,6 +15,7 @@ run, only that it eventually does.
 """
 import logging
 
+from src.clustering import assign_report, reporter_reputation
 from src.confidence import (alert_tier, compute_initial_confidence, count_nearby_reports,
                             is_within_known_flood_zone, with_votes)
 from src.database import get_connection
@@ -41,11 +42,16 @@ def refine_incident(incident_id: int, source: str, incident_type: str, latitude:
     """
     conn = get_connection()
     try:
+        key_row = conn.execute("SELECT reporter_key FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+        reporter_key = key_row["reporter_key"] if key_row else None
+        # Another message from the same sender is not a second witness.
         nearby = count_nearby_reports(
-            conn, latitude, longitude, incident_type, timestamp, exclude_id=incident_id
+            conn, latitude, longitude, incident_type, timestamp, exclude_id=incident_id,
+            exclude_reporter_key=reporter_key,
         )
         ground_truth = is_within_known_flood_zone(conn, incident_type, latitude, longitude)
-        base = compute_initial_confidence(source, incident_type, has_evidence, nearby, ground_truth)
+        reputation = reporter_reputation(conn, reporter_key, exclude_id=incident_id) if source == "citizen" else 0.0
+        base = compute_initial_confidence(source, incident_type, has_evidence, nearby, ground_truth, reputation)
         _, severity = point_risk(latitude, longitude, incident_type)
 
         # Votes may have arrived while this pass ran. Read them and write the
@@ -61,6 +67,9 @@ def refine_incident(incident_id: int, source: str, incident_type: str, latitude:
             "predicted_severity = ?, scoring_stage = 'strategic' WHERE id = ?",
             (base, confidence, tier, severity, incident_id),
         )
+        # Same transaction: two reports of one event arriving together can't
+        # both open a new incident (src/clustering.py).
+        assign_report(conn, incident_id)
         conn.commit()
     except Exception:
         logger.exception("Strategic refinement failed for incident %s - it will stay at reflex-only confidence", incident_id)

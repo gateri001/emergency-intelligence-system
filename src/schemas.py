@@ -212,9 +212,110 @@ class IncidentOut(BaseModel):
     review_status: str | None = None  # officer's call: verified / dismissed / not reviewed (None)
 
 
+class OfficerIncidentOut(IncidentOut):
+    """A report as officers see it: which incident it belongs to and why it
+    was dismissed. The sender's pseudonym is never sent anywhere."""
+    cluster_id: int | None = None
+    dismiss_reason: str | None = None
+
+
+DismissReason = Literal["prank", "mistaken", "duplicate", "unverifiable", "not_actionable"]
+
+
 class IncidentReviewRequest(BaseModel):
     action: Literal["verify", "dismiss"]
     note: str = Field("", max_length=300)
+    # Optional for a single report; only 'prank' counts against the sender.
+    reason: DismissReason | None = None
+
+
+# --- Block A: incidents (clusters of reports), lifecycle, units -------------
+
+ClusterStatus = Literal["new", "verified", "assigned", "en_route", "on_scene", "resolved", "dismissed", "merged"]
+UnitStatus = Literal["available", "assigned", "en_route", "on_scene", "unavailable"]
+
+
+class ClusterOut(BaseModel):
+    id: int
+    type: str
+    status: ClusterStatus
+    latitude: float
+    longitude: float
+    area: str
+    report_count: int
+    independent_count: int
+    confidence_score: float
+    alert_tier: str
+    officers_only: bool
+    first_report_at: str
+    last_report_at: str
+    commander: str | None = None
+    needs_location: bool = False
+    needs_translation: bool = False
+    escalate: bool = False
+    dismiss_reason: str | None = None
+    merged_into: int | None = None
+    units_count: int = 0
+    last_activity_at: str | None = None  # newest report's arrival time, UTC
+    created_at: str
+    updated_at: str
+
+
+class UnitOut(BaseModel):
+    id: int
+    name: str
+    kind: str
+    status: UnitStatus
+    cluster_id: int | None = None
+    note: str = ""
+    updated_by: str | None = None
+    updated_at: str
+
+
+class TimelineEvent(BaseModel):
+    at: str | None
+    kind: Literal["report", "action", "alert"]
+    actor: str | None = None
+    text: str
+
+
+class ClusterDetail(BaseModel):
+    incident: ClusterOut
+    reports: list[OfficerIncidentOut]
+    units: list[UnitOut]
+    timeline: list[TimelineEvent]
+    allowed_next: list[str]
+
+
+class ClusterStatusRequest(BaseModel):
+    status: ClusterStatus
+    note: str = Field("", max_length=300)
+    reason: DismissReason | None = None  # required when dismissing
+
+
+class ClusterFlagsRequest(BaseModel):
+    needs_location: bool | None = None
+    needs_translation: bool | None = None
+    escalate: bool | None = None
+
+
+class CommanderRequest(BaseModel):
+    commander: str | None = Field(None, max_length=50)
+
+
+class MergeRequest(BaseModel):
+    other_id: int
+
+
+class UnitIn(BaseModel):
+    name: str = Field(..., min_length=2, max_length=60)
+    kind: str = Field("", max_length=40, examples=["fire engine", "ambulance", "Red Cross team"])
+
+
+class UnitStatusRequest(BaseModel):
+    status: UnitStatus
+    cluster_id: int | None = None
+    note: str = Field("", max_length=200)
 
 
 class VoteRequest(BaseModel):

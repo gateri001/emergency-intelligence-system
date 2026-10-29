@@ -153,6 +153,8 @@ textarea { min-height: 96px; resize: vertical; }
 .sheet-actions { display: flex; gap: 8px; margin-top: 16px; }
 .sheet-actions .btn { flex: 1; }
 .sheet .field { margin-top: 12px; }
+.sheet .meta { color: var(--muted); font-size: 14px; margin-top: 4px; }
+.sheet .body { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .mini-map { height: 220px; border-radius: 10px; margin-top: 8px; }
 .preview {
@@ -186,6 +188,35 @@ textarea { min-height: 96px; resize: vertical; }
   border: 1px solid var(--line);
   border-radius: 10px;
 }
+
+/* Block A: incidents, timeline, units */
+.filters { display: flex; gap: 8px; margin: 0 0 12px; }
+.filter.active { border-color: var(--accent); color: var(--accent); }
+.card.clickable { cursor: pointer; }
+.card.escalated { border-color: var(--red); }
+.badge.status { background: transparent; }
+.badge.status.new { border-color: var(--amber); color: var(--amber); }
+.badge.status.verified, .badge.status.assigned, .badge.status.en_route, .badge.status.on_scene {
+  border-color: var(--accent); color: var(--accent);
+}
+.badge.status.resolved { border-color: var(--green); color: var(--green); }
+.section-title { margin: 18px 0 6px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.row .btn { flex: 1 1 140px; }
+.row select, .row input { flex: 2 1 160px; width: auto; }
+.btn.on { border-color: var(--amber); color: var(--amber); }
+.timeline { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+.timeline li { position: relative; padding: 0 0 12px 14px; font-size: 14px; overflow-wrap: anywhere; }
+.timeline li::before {
+  content: ""; position: absolute; left: -6px; top: 5px;
+  width: 10px; height: 10px; border-radius: 50%; background: var(--line);
+}
+.timeline li.report::before { background: var(--amber); }
+.timeline li.action::before { background: var(--accent); }
+.timeline li.alert::before { background: var(--red); }
+.timeline .when { color: var(--muted); font-size: 12px; }
+.mini-report { padding: 10px 0; border-top: 1px solid var(--line); }
+.mini-report:first-child { border-top: 0; }
 
 .log-row { font-size: 14px; }
 .log-row .meta { font-size: 13px; }

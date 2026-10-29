@@ -100,7 +100,9 @@ def category_for(incident_type: str) -> str:
 
 
 def compute_initial_confidence(source: str, incident_type: str, has_evidence: bool, nearby_count: int,
-                                historical_ground_truth: bool = False) -> float:
+                                historical_ground_truth: bool = False, reputation: float = 0.0) -> float:
+    """`reputation`: the sender's track record (src/clustering.py,
+    reporter_reputation) - small, and negative only for proven pranks."""
     category = category_for(incident_type)
     if source in SOURCE_BASE_CONFIDENCE:
         base = SOURCE_BASE_CONFIDENCE[source]
@@ -113,7 +115,8 @@ def compute_initial_confidence(source: str, incident_type: str, has_evidence: bo
     score += min(nearby_count * NEARBY_REPORT_BONUS, MAX_NEARBY_BONUS)
     if historical_ground_truth:
         score += HISTORICAL_GROUND_TRUTH_BONUS
-    return round(min(score, 1.0), 3)
+    score += reputation
+    return round(min(max(score, 0.0), 1.0), 3)
 
 
 FLOOD_ZONE_BUFFER_DEG = 0.01  # ~1.1km - see docstring below for why this isn't strict containment
@@ -174,7 +177,8 @@ def alert_tier(confidence: float, incident_type: str) -> str:
 
 def count_nearby_reports(conn, latitude: float, longitude: float, incident_type: str, timestamp: str,
                           radius_km: float = NEARBY_RADIUS_KM, window_hours: float = NEARBY_WINDOW_HOURS,
-                          exclude_source: str | None = None, exclude_id: int | None = None) -> int:
+                          exclude_source: str | None = None, exclude_id: int | None = None,
+                          exclude_reporter_key: str | None = None) -> int:
     """Independent reports of the same type, close in space and time - the
     corroboration signal used by the strategic layer (src/strategic.py).
     Distance is computed in Python (haversine) rather than SQL since
@@ -195,7 +199,12 @@ def count_nearby_reports(conn, latitude: float, longitude: float, incident_type:
     inserted (see src/strategic.py), unlike the old single-pass pipeline
     which computed this before insert - without excluding the report's own
     row, it would trivially match itself (same location, same timestamp)
-    and inflate its own corroboration count by one every time."""
+    and inflate its own corroboration count by one every time.
+
+    `exclude_reporter_key`: reports from the same sender (same keyed
+    pseudonym, src/clustering.py) don't corroborate each other - one person
+    sending five messages is one witness. Reports with no known sender
+    (the web app) still count, as before; the bonus is capped either way."""
     from src.geo import haversine_km
 
     try:
@@ -211,6 +220,9 @@ def count_nearby_reports(conn, latitude: float, longitude: float, incident_type:
     if exclude_id is not None:
         query += " AND id != ?"
         params.append(exclude_id)
+    if exclude_reporter_key:
+        query += " AND (reporter_key IS NULL OR reporter_key != ?)"
+        params.append(exclude_reporter_key)
     rows = conn.execute(query, params).fetchall()
 
     count = 0

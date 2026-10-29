@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 
 from typing import Literal
@@ -15,6 +16,8 @@ from slowapi.util import get_remote_address
 from src.auth import (authenticate_officer, create_access_token, get_current_account, get_current_officer,
                       require_role)
 from src.broadcast import get_provider, phone_key, select_targets, send_all
+from src import clustering
+from src.clustering import NotAllowed, NotFound, reporter_key_for
 from src.confidence import alert_tier, fire_detection_tier, is_within_known_flood_zone, with_votes
 from src.database import get_connection, init_db
 from src.geo import haversine_km
@@ -28,11 +31,17 @@ from src.schemas import (
     BroadcastRequest,
     BroadcastResponse,
     BulkReportRequest,
+    ClusterDetail,
+    ClusterFlagsRequest,
+    ClusterOut,
+    ClusterStatusRequest,
+    CommanderRequest,
     HealthFacilityOut,
     IncidentBroadcastPreview,
     IncidentOut,
     IncidentReport,
     IncidentReviewRequest,
+    MergeRequest,
     MissingChildBroadcastPreview,
     MissingChildBroadcastRequest,
     MissingChildBroadcastResponse,
@@ -45,6 +54,7 @@ from src.schemas import (
     MissingChildVerifyRequest,
     NearbyIncident,
     NearbyResponse,
+    OfficerIncidentOut,
     PredictionRequest,
     PredictionResponse,
     RevealRequest,
@@ -52,6 +62,9 @@ from src.schemas import (
     SafeRouteRequest,
     SafeRouteResponse,
     SubscriberIn,
+    UnitIn,
+    UnitOut,
+    UnitStatusRequest,
     SERVICE_AREA,
     VoteRequest,
     check_in_service_area,
@@ -60,6 +73,14 @@ from src.schemas import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Reports from before incidents existed, or whose scoring pass failed,
+    # get placed now (src/clustering.py).
+    conn = get_connection()
+    conn.execute("BEGIN IMMEDIATE")
+    clustering.forget_orphans(conn)
+    clustering.assign_unplaced(conn)
+    conn.commit()
+    conn.close()
     if not encryption_available():
         print(
             "WARNING: EIS_DATA_KEY not set - crime reporters' phone numbers will NOT be stored. "
@@ -223,7 +244,8 @@ def safe_route(request: Request, body: SafeRouteRequest):
 # Incident ingestion (citizen reports are public; officer/bulk require auth)
 # -------------------------------------------------------------------
 
-def _insert_incident(source: str, report: IncidentReport, background_tasks: BackgroundTasks) -> tuple[int, bool]:
+def _insert_incident(source: str, report: IncidentReport, background_tasks: BackgroundTasks,
+                     reporter_key: str | None = None) -> tuple[int, bool]:
     """
     Reflex-first ingestion: an instant, bounded-cost assessment (source
     trust, evidence, known-flood-zone check - see src/reflex.py) is what
@@ -233,8 +255,14 @@ def _insert_incident(source: str, report: IncidentReport, background_tasks: Back
     (src/strategic.py) and updates the row moments later. A reporter's
     "received" response no longer waits on a full grid rebuild or table
     scan; see docs/architecture.md for the reasoning and the R&D behind it.
+
+    `reporter_key` is the sender's pseudonym (src/clustering.py). The web
+    app has no sender identity; a crime reporter who gives a number gets a
+    keyed hash of it, so their repeat reports don't count as new witnesses.
     """
     incident_type = report.type.strip().lower()
+    if reporter_key is None and report.reporter_phone:
+        reporter_key = reporter_key_for("phone", report.reporter_phone)
     # Crime defaults to officers-only: a witness opts IN to warning people
     # nearby, never has to remember to opt out.
     visibility = report.visibility or ("officers_only" if is_crime(incident_type) else "public")
@@ -248,11 +276,11 @@ def _insert_incident(source: str, report: IncidentReport, background_tasks: Back
         """INSERT INTO incidents
            (source, type, area, latitude, longitude, description, predicted_severity, timestamp,
             visibility, has_evidence, base_confidence, confidence_score, corroboration_count, alert_tier,
-            reporter_phone_enc)
-           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            reporter_phone_enc, reporter_key)
+           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (source, incident_type, report.area.strip(),
          report.latitude, report.longitude, report.description, report.timestamp,
-         visibility, int(report.has_evidence), confidence, confidence, 0, tier, phone_enc),
+         visibility, int(report.has_evidence), confidence, confidence, 0, tier, phone_enc, reporter_key),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -283,13 +311,13 @@ def report_citizen(request: Request, report: IncidentReport, background_tasks: B
 
 @app.post("/report/officer")
 def report_officer(report: IncidentReport, background_tasks: BackgroundTasks, officer: str = Depends(get_current_officer)):
-    incident_id, phone_stored = _insert_incident("officer", report, background_tasks)
+    incident_id, phone_stored = _insert_incident("officer", report, background_tasks, f"officer:{officer}")
     return _received(incident_id, report, phone_stored, logged_by=officer)
 
 
 @app.post("/report/bulk")
 def report_bulk(request: BulkReportRequest, background_tasks: BackgroundTasks, officer: str = Depends(get_current_officer)):
-    ids = [_insert_incident("bulk", r, background_tasks)[0] for r in request.reports]
+    ids = [_insert_incident("bulk", r, background_tasks, f"bulk:{officer}")[0] for r in request.reports]
     return {"status": "received", "count": len(ids), "incident_ids": ids, "logged_by": officer}
 
 
@@ -345,6 +373,8 @@ def vote_on_incident(incident_id: int, request: Request, vote: VoteRequest):
         "vote_confirms = ?, vote_disputes = ? WHERE id = ?",
         (base, new_confidence, new_tier, new_corroboration, confirms, disputes, incident_id),
     )
+    if row["cluster_id"] is not None:
+        clustering.recompute_cluster(conn, row["cluster_id"])
     conn.commit()
     updated = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
     conn.close()
@@ -370,23 +400,28 @@ def list_incidents(limit: int = Query(100, ge=1, le=500)):
     return [IncidentOut(**public_incident(dict(row))) for row in rows]
 
 
-@app.post("/incidents/{incident_id}/review", response_model=IncidentOut)
+@app.post("/incidents/{incident_id}/review", response_model=OfficerIncidentOut)
 def review_incident(incident_id: int, body: IncidentReviewRequest, officer: str = Depends(get_current_officer)):
     """An officer's call on a report. 'dismiss' takes it off the recommended
     list; 'verify' marks it checked and puts it first. Neither changes the
-    confidence score, which stays the system's own estimate."""
+    confidence score, which stays the system's own estimate. A dismissal's
+    reason feeds the sender's track record: only 'prank' counts against them."""
     status = "verified" if body.action == "verify" else "dismissed"
+    reason = body.reason if status == "dismissed" else None
     conn = get_connection()
-    cur = conn.execute("UPDATE incidents SET review_status = ?, reviewed_by = ? WHERE id = ?",
-                       (status, officer, incident_id))
+    cur = conn.execute("UPDATE incidents SET review_status = ?, reviewed_by = ?, dismiss_reason = ? WHERE id = ?",
+                       (status, officer, reason, incident_id))
     if cur.rowcount == 0:
         conn.close()
         raise HTTPException(status_code=404, detail="Incident not found")
-    log_action(conn, officer, f"{body.action}_incident", "incident", incident_id, body.note.strip())
-    conn.commit()
+    detail = " · ".join(x for x in (reason or "", body.note.strip()) if x)
+    log_action(conn, officer, f"{body.action}_incident", "incident", incident_id, detail)
     row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    if row["cluster_id"] is not None:
+        clustering.recompute_cluster(conn, row["cluster_id"])
+    conn.commit()
     conn.close()
-    return IncidentOut(**dict(row))
+    return OfficerIncidentOut(**dict(row))
 
 
 @app.post("/incidents/{incident_id}/reveal-reporter")
@@ -462,7 +497,7 @@ def nearby(request: Request, latitude: float, longitude: float):
     return NearbyResponse(latitude=latitude, longitude=longitude, risk=risk, incidents=found[:50])
 
 
-@app.get("/incidents/all", response_model=list[IncidentOut])
+@app.get("/incidents/all", response_model=list[OfficerIncidentOut])
 def list_incidents_all(limit: int = Query(100, ge=1, le=500), officer: str = Depends(get_current_officer)):
     """Officer view: includes officers_only reports. Still never exposes a
     reporter identity, because none is ever collected in the first place."""
@@ -471,10 +506,10 @@ def list_incidents_all(limit: int = Query(100, ge=1, le=500), officer: str = Dep
         "SELECT * FROM incidents ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     conn.close()
-    return [IncidentOut(**dict(row)) for row in rows]
+    return [OfficerIncidentOut(**dict(row)) for row in rows]
 
 
-@app.get("/alert/recommended", response_model=list[IncidentOut])
+@app.get("/alert/recommended", response_model=list[OfficerIncidentOut])
 def list_recommended_alerts(officer: str = Depends(get_current_officer)):
     """
     Incidents whose confidence has crossed the sms_recommended or critical
@@ -503,7 +538,187 @@ def list_recommended_alerts(officer: str = Depends(get_current_officer)):
         "ORDER BY review_status IS NULL, confidence_score DESC LIMIT 100"
     ).fetchall()
     conn.close()
-    return [IncidentOut(**dict(row)) for row in rows]
+    return [OfficerIncidentOut(**dict(row)) for row in rows]
+
+
+# -------------------------------------------------------------------
+# Block A: incidents (clusters of reports), their lifecycle, and units.
+# Officers only - none of this is ever served publicly. Logic lives in
+# src/clustering.py; these handlers only translate HTTP to it.
+# -------------------------------------------------------------------
+
+# last_activity_at: when the newest report reached the server (UTC). Report
+# timestamps are typed by people or set by sensors and can be days old, so
+# "is this live?" is judged on arrival time instead.
+_CLUSTER_SELECT = (
+    "SELECT c.*, (SELECT COUNT(*) FROM units u WHERE u.cluster_id = c.id) AS units_count, "
+    "(SELECT MAX(i.created_at) FROM incidents i WHERE i.cluster_id = c.id) AS last_activity_at FROM clusters c"
+)
+LIVE_HOURS = 24
+
+
+def _cluster_action(fn, *args):
+    """Runs one officer action in a write transaction, mapping the module's
+    errors to HTTP answers."""
+    conn = get_connection()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        result = fn(conn, *args)
+        conn.commit()
+        return result
+    except NotFound as e:
+        conn.rollback()
+        raise HTTPException(status_code=404, detail=str(e))
+    except NotAllowed as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+def _cluster_out(conn, cluster_id: int) -> ClusterOut:
+    row = conn.execute(f"{_CLUSTER_SELECT} WHERE c.id = ?", (cluster_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return ClusterOut(**dict(row))
+
+
+@app.get("/clusters", response_model=list[ClusterOut])
+def list_clusters(state: Literal["open", "closed", "all"] = "open", limit: int = Query(100, ge=1, le=500),
+                  officer: str = Depends(get_current_officer)):
+    """Incidents for the console. Escalated first; then anything with a
+    report in the last 24 hours ahead of older ones (so a week-old satellite
+    fire never buries tonight's flood); then by alert tier, unverified
+    before verified (they need a decision), confidence and recency."""
+    where = {
+        "open": "WHERE c.status IN ('new', 'verified', 'assigned', 'en_route', 'on_scene')",
+        "closed": "WHERE c.status IN ('resolved', 'dismissed')",
+        "all": "WHERE c.status != 'merged'",
+    }[state]
+    conn = get_connection()
+    rows = conn.execute(
+        f"{_CLUSTER_SELECT} {where} ORDER BY c.escalate DESC, "
+        f"COALESCE(last_activity_at >= datetime('now', '-{LIVE_HOURS} hours'), 0) DESC, "
+        "CASE c.alert_tier WHEN 'critical' THEN 2 WHEN 'sms_recommended' THEN 1 ELSE 0 END DESC, "
+        "c.status = 'new' DESC, c.confidence_score DESC, last_activity_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [ClusterOut(**dict(r)) for r in rows]
+
+
+@app.get("/clusters/{cluster_id}", response_model=ClusterDetail)
+def get_cluster(cluster_id: int, officer: str = Depends(get_current_officer)):
+    """One incident with its reports, units and timeline."""
+    conn = get_connection()
+    try:
+        incident = _cluster_out(conn, cluster_id)
+        reports = conn.execute("SELECT * FROM incidents WHERE cluster_id = ? ORDER BY id", (cluster_id,)).fetchall()
+        units = conn.execute("SELECT * FROM units WHERE cluster_id = ? ORDER BY name", (cluster_id,)).fetchall()
+        events = clustering.timeline(conn, cluster_id)
+    finally:
+        conn.close()
+    return ClusterDetail(
+        incident=incident,
+        reports=[OfficerIncidentOut(**dict(r)) for r in reports],
+        units=[UnitOut(**dict(u)) for u in units],
+        timeline=events,
+        allowed_next=sorted(clustering.TRANSITIONS.get(incident.status, set())),
+    )
+
+
+@app.post("/clusters/{cluster_id}/status", response_model=ClusterOut)
+def update_cluster_status(cluster_id: int, body: ClusterStatusRequest, officer: str = Depends(get_current_officer)):
+    """Moves an incident along new -> verified -> assigned -> en route ->
+    on scene -> resolved, or dismisses it (a reason is required). Verifying
+    or dismissing it also judges every report in it not yet judged alone."""
+    _cluster_action(clustering.set_status, cluster_id, body.status, officer, body.note.strip(), body.reason)
+    conn = get_connection()
+    try:
+        return _cluster_out(conn, cluster_id)
+    finally:
+        conn.close()
+
+
+@app.post("/clusters/{cluster_id}/flags", response_model=ClusterOut)
+def update_cluster_flags(cluster_id: int, body: ClusterFlagsRequest, officer: str = Depends(get_current_officer)):
+    _cluster_action(clustering.set_flags, cluster_id, body.model_dump(), officer)
+    conn = get_connection()
+    try:
+        return _cluster_out(conn, cluster_id)
+    finally:
+        conn.close()
+
+
+@app.post("/clusters/{cluster_id}/commander", response_model=ClusterOut)
+def update_cluster_commander(cluster_id: int, body: CommanderRequest, officer: str = Depends(get_current_officer)):
+    """Names the one person in charge of an incident (or clears it)."""
+    commander = body.commander.strip() if body.commander else None
+    _cluster_action(clustering.set_commander, cluster_id, commander, officer)
+    conn = get_connection()
+    try:
+        return _cluster_out(conn, cluster_id)
+    finally:
+        conn.close()
+
+
+@app.post("/clusters/{cluster_id}/merge", response_model=ClusterOut)
+def merge_clusters(cluster_id: int, body: MergeRequest, officer: str = Depends(get_current_officer)):
+    """Folds incident `other_id` into this one: they were the same event."""
+    _cluster_action(clustering.merge, cluster_id, body.other_id, officer)
+    conn = get_connection()
+    try:
+        return _cluster_out(conn, cluster_id)
+    finally:
+        conn.close()
+
+
+@app.post("/incidents/{incident_id}/detach", response_model=ClusterOut)
+def detach_report(incident_id: int, officer: str = Depends(get_current_officer)):
+    """Moves one report out of its incident into a new incident of its own:
+    the system grouped two different events."""
+    new_id = _cluster_action(clustering.detach, incident_id, officer)
+    conn = get_connection()
+    try:
+        return _cluster_out(conn, new_id)
+    finally:
+        conn.close()
+
+
+@app.get("/units", response_model=list[UnitOut])
+def list_units(officer: str = Depends(get_current_officer)):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM units ORDER BY status != 'available', name").fetchall()
+    conn.close()
+    return [UnitOut(**dict(r)) for r in rows]
+
+
+@app.post("/units", response_model=UnitOut)
+def create_unit(body: UnitIn, account: dict = Depends(require_role("admin"))):
+    """Adds a responder unit to the board. Admin or owner."""
+    conn = get_connection()
+    try:
+        unit_id = conn.execute("INSERT INTO units (name, kind, updated_by) VALUES (?, ?, ?)",
+                               (body.name.strip(), body.kind.strip(), account["username"])).lastrowid
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=400, detail="A unit with that name already exists")
+    log_action(conn, account["username"], "unit_created", "unit", unit_id, body.name.strip())
+    conn.commit()
+    row = conn.execute("SELECT * FROM units WHERE id = ?", (unit_id,)).fetchone()
+    conn.close()
+    return UnitOut(**dict(row))
+
+
+@app.post("/units/{unit_id}/status", response_model=UnitOut)
+def update_unit_status(unit_id: int, body: UnitStatusRequest, officer: str = Depends(get_current_officer)):
+    """Assigns a unit to a verified incident, moves it en route / on scene
+    (the incident moves forward with it), or frees it."""
+    _cluster_action(clustering.set_unit_status, unit_id, body.status, body.cluster_id, officer, body.note.strip())
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM units WHERE id = ?", (unit_id,)).fetchone()
+    conn.close()
+    return UnitOut(**dict(row))
 
 
 # -------------------------------------------------------------------
